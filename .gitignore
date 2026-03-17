@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.icns
+knowledge/*.json
+!knowledge/.gitkeep
+/tmp/
+.DS_Store

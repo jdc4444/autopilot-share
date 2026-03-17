@@ -1,0 +1,2660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Autopilot</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-deep: #f5f5f7;
+    --bg-panel: #ffffff;
+    --bg-surface: #ffffff;
+    --bg-raised: #f0f0f2;
+    --border: #e0e0e4;
+    --border-light: #d0d0d5;
+    --text-primary: #1d1d1f;
+    --text-secondary: #6e6e73;
+    --text-muted: #98989d;
+    --text-dim: #c7c7cc;
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --green: #34c759;
+    --green-bg: #eefbf1;
+    --blue: #007aff;
+    --blue-bg: #eef4ff;
+    --red: #ff3b30;
+    --red-bg: #fff0ef;
+    --purple: #af52de;
+    --orange: #ff9500;
+    --mono: 'SF Mono', 'Fira Code', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', system-ui, sans-serif;
+  }
+
+  [data-theme="dark"] {
+    --bg-deep: #0d0d0f;
+    --bg-panel: #1c1c1e;
+    --bg-surface: #2c2c2e;
+    --bg-raised: #3a3a3c;
+    --border: #38383a;
+    --border-light: #48484a;
+    --text-primary: #f5f5f7;
+    --text-secondary: #98989d;
+    --text-muted: #636366;
+    --text-dim: #48484a;
+    --accent: #0a84ff;
+    --accent-hover: #409cff;
+    --green: #30d158;
+    --green-bg: #0a1f14;
+    --blue: #0a84ff;
+    --blue-bg: #0a1428;
+    --red: #ff453a;
+    --red-bg: #2a0f0e;
+    --purple: #bf5af2;
+    --orange: #ff9f0a;
+  }
+
+  /* Dark mode overrides for hardcoded colors */
+  [data-theme="dark"] .msg.user { background: #1a1a2e; border-color: #2a2a3e; }
+  [data-theme="dark"] .msg-sent { border-color: var(--border); }
+  [data-theme="dark"] .msg.error { border-color: #3a1515; }
+  [data-theme="dark"] .sent-log-item { border-color: var(--border); }
+  [data-theme="dark"] .suggested-panel { background: var(--bg-surface); border-color: var(--border); }
+  [data-theme="dark"] ::-webkit-scrollbar-track { background: var(--bg-panel); }
+  [data-theme="dark"] ::-webkit-scrollbar-thumb { background: #48484a; }
+  [data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #636366; }
+  [data-theme="dark"] .btn.active { color: #fff; }
+
+  .theme-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    color: var(--text-secondary);
+    transition: border-color 0.2s;
+  }
+  .theme-toggle:hover { border-color: var(--accent); }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+
+  /* Header */
+  .header {
+    padding: 8px 20px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex: 1;
+  }
+
+  .header h1 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-primary);
+  }
+
+  /* Cycle progress tracker — fluid gradient bar */
+  .cycle-progress {
+    position: relative;
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin: 0 8px;
+  }
+  /* The fill bar — gradient from green to amber */
+  .cp-track-fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--green), var(--accent), var(--accent-hover));
+    border-radius: 3px;
+    transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+    overflow: hidden;
+  }
+  /* Glowing leading edge */
+  .cp-track-fill::after {
+    content: '';
+    position: absolute;
+    top: -4px;
+    right: -2px;
+    width: 20px;
+    height: 14px;
+    background: radial-gradient(ellipse at center, var(--accent) 0%, transparent 70%);
+    border-radius: 50%;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  .cycle-progress.animating .cp-track-fill::after {
+    opacity: 0.8;
+    animation: cp-glow 2s ease-in-out infinite;
+  }
+  @keyframes cp-glow {
+    0%, 100% { opacity: 0.4; transform: translateX(0) scaleX(1); }
+    50% { opacity: 1; transform: translateX(-2px) scaleX(1.5); }
+  }
+  /* Shimmer wave that flows through the filled area */
+  .cycle-progress.animating .cp-track-fill::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 40%, rgba(255,255,255,0.25) 50%, rgba(255,255,255,0.15) 60%, transparent 100%);
+    animation: cp-shimmer 2s ease-in-out infinite;
+    border-radius: 3px;
+  }
+  @keyframes cp-shimmer {
+    0% { left: -100%; }
+    100% { left: 200%; }
+  }
+
+  .cp-step-labels { display: none; }
+  .cp-step { display: none; }
+
+  .cp-countdown {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    min-width: 22px;
+    text-align: center;
+  }
+  .cp-countdown.breathing {
+    animation: cp-breathe 3s ease-in-out infinite;
+  }
+  @keyframes cp-breathe {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 1; }
+  }
+
+  /* Idle state — gentle ambient light sweeps across the empty bar */
+  .cp-sweep {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  .cycle-progress.stopped .cp-sweep { opacity: 1; }
+  .cp-sweep::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -30%;
+    width: 30%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, var(--text-muted), transparent);
+    animation: cp-sweep 3.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes cp-sweep {
+    0% { left: -30%; opacity: 0; }
+    10% { opacity: 0.6; }
+    90% { opacity: 0.6; }
+    100% { left: 100%; opacity: 0; }
+  }
+  .cp-cycle-num {
+    font-size: 9px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    background: var(--bg-raised);
+    padding: 1px 6px;
+    border-radius: 8px;
+  }
+
+  /* Cycle history — thin strip below the main bar */
+  .cycle-dots {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    right: 0;
+    height: 2px;
+    display: flex;
+    gap: 1px;
+    pointer-events: none;
+  }
+  .cd-seg {
+    flex: 1;
+    height: 100%;
+    border-radius: 1px;
+    background: var(--text-dim);
+    opacity: 0.4;
+    transition: opacity 0.4s, background 0.4s;
+  }
+  .cd-seg.active { background: var(--green); opacity: 0.9; }
+  .cd-seg.slow { background: var(--accent); opacity: 0.7; }
+  .cd-seg.error { background: var(--red); opacity: 0.9; }
+  .cd-seg.sent { background: var(--blue); opacity: 0.9; }
+
+  /* Flash overlays on the main bar */
+  .cp-flash {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+    border-radius: 3px;
+    pointer-events: none;
+    opacity: 0;
+    overflow: hidden;
+  }
+  .cp-flash.screenshot {
+    background: linear-gradient(90deg, rgba(255,255,255,0.5), rgba(255,255,255,0.1));
+    animation: cp-flash-capture 0.4s ease-out forwards;
+  }
+  .cp-flash.insight {
+    background: linear-gradient(90deg, transparent 20%, var(--accent), transparent 80%);
+    animation: cp-flash-insight 0.8s ease-out forwards;
+  }
+  @keyframes cp-flash-capture {
+    0% { opacity: 0.9; transform: scaleX(0.3); transform-origin: left; }
+    100% { opacity: 0; transform: scaleX(1); transform-origin: left; }
+  }
+  @keyframes cp-flash-insight {
+    0% { opacity: 0; }
+    20% { opacity: 0.7; }
+    100% { opacity: 0; }
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .btn {
+    padding: 5px 16px;
+    border: none;
+    border-radius: 980px;
+    background: var(--bg-raised);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--sans);
+  }
+  .btn:hover { background: var(--border); color: var(--text-primary); }
+  .btn.active { background: var(--red); color: #fff; }
+
+  .cycle-badge {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+  .cycle-badge span { color: var(--text-secondary); font-weight: 700; }
+
+  /* Chat area */
+  .chat {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .msg {
+    max-width: 88%;
+    padding: 12px 16px;
+    border-radius: 16px;
+    font-size: 13px;
+    line-height: 1.6;
+    animation: fadeIn 0.25s ease-out;
+    word-break: break-word;
+  }
+
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* User messages — right aligned */
+  .msg.user {
+    align-self: flex-end;
+    background: var(--accent);
+    border: none;
+    color: #fff;
+  }
+
+  /* Brain messages — left aligned */
+  .msg.brain {
+    align-self: flex-start;
+    background: var(--bg-raised);
+    border: none;
+    color: var(--text-primary);
+  }
+  .msg.brain.auto {
+    border-left: 3px solid var(--purple);
+  }
+  /* Brain message type indicators */
+  .msg.brain.type-suggestion { border-left: 3px solid var(--green); }
+  .msg.brain.type-observation { border-left: 3px solid var(--blue); }
+  .msg.brain.type-question { border-left: 3px solid var(--orange); }
+
+  .msg-meta {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+    font-family: var(--mono);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .msg-meta .label {
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .msg.brain .msg-meta .label { color: var(--text-muted); }
+  .msg.user .msg-meta .label { color: rgba(255,255,255,0.7); }
+  .msg.user .msg-meta { color: rgba(255,255,255,0.5); }
+  .msg-meta .msg-type-badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 980px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .msg-type-badge.suggestion { background: var(--green-bg); color: var(--green); }
+  .msg-type-badge.observation { background: var(--blue-bg); color: var(--blue); }
+  .msg-type-badge.question { background: #fff8ef; color: var(--orange); }
+  [data-theme="dark"] .msg-type-badge.question { background: #1f1a0f; }
+  .msg-meta .msg-time-rel {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-left: auto;
+  }
+
+  /* Sent indicator */
+  .msg-sent {
+    margin-top: 8px;
+    padding: 6px 10px;
+    background: var(--blue-bg);
+    border: none;
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--blue);
+  }
+  .msg-sent::before {
+    content: 'SENT TO CLAUDE: ';
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    opacity: 0.6;
+  }
+
+  /* System messages */
+  .msg.system {
+    align-self: center;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 4px 12px;
+    max-width: 100%;
+  }
+
+  /* Error messages */
+  .msg.error {
+    align-self: center;
+    background: var(--red-bg);
+    color: var(--red);
+    font-size: 11px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 8px;
+    max-width: 100%;
+  }
+
+  /* Sent log */
+  .msg.sent {
+    align-self: center;
+    background: var(--blue-bg);
+    color: var(--blue);
+    font-size: 11px;
+    font-family: var(--mono);
+    padding: 6px 12px;
+    border: none;
+    border-radius: 8px;
+    max-width: 100%;
+  }
+  .msg.sent::before {
+    content: 'SENT: ';
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    opacity: 0.6;
+  }
+
+  /* Activity panel — live brain activity indicator, styled like a brain message */
+  .activity-panel {
+    align-self: flex-start;
+    max-width: 88%;
+    max-height: 80px;
+    overflow-y: auto;
+    padding: 10px 14px;
+    border-radius: 16px;
+    background: var(--bg-raised);
+    border: none;
+    border-left: 3px solid var(--purple);
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+    display: none;
+  }
+  .activity-panel.visible { display: block; }
+
+  .activity-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 0;
+    font-size: 9px;
+    animation: fadeIn 0.2s ease-out;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .activity-item .icon { opacity: 0.6; }
+  .activity-item.thinking { color: var(--purple); }
+  .activity-item.tool { color: var(--blue); }
+  .activity-item.text { color: var(--green); }
+  .activity-item.done { color: var(--text-muted); }
+  .activity-item .spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+  }
+
+  /* Trace block — collapsible activity log in brain reply */
+  .trace-block {
+    margin-bottom: 6px;
+  }
+  .trace-block summary {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px 0;
+    user-select: none;
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .trace-block summary:hover { color: var(--text-secondary); }
+  .trace-block .trace-tags {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+  }
+  .trace-tag {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .trace-tag.tokens { background: #f3f0f8; color: var(--purple); }
+  .trace-tag.cost { background: #fdf8ef; color: var(--orange); }
+  .trace-tag.tools { background: var(--blue-bg); color: var(--blue); }
+  .trace-tag.turns { background: var(--green-bg); color: var(--green); }
+  [data-theme="dark"] .trace-tag.tokens { background: #1a1520; }
+  [data-theme="dark"] .trace-tag.cost { background: #1a1a10; }
+
+  .trace-block .trace-content {
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 8px 10px;
+    margin-top: 4px;
+    background: var(--bg-deep);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-muted);
+  }
+  .trace-entry {
+    padding: 2px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  .trace-entry .te-icon { opacity: 0.5; flex-shrink: 0; }
+  .trace-entry.te-thinking { color: var(--purple); }
+  .trace-entry.te-tool { color: var(--blue); }
+  .trace-entry.te-result { color: var(--text-muted); }
+  .trace-entry .te-name { font-weight: 700; }
+  .trace-entry .te-detail { opacity: 0.6; margin-left: 4px; }
+
+  /* Input area */
+  .input-area {
+    padding: 12px 20px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .chat-input-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .chat-input-row input {
+    flex: 1;
+    padding: 10px 16px;
+    background: var(--bg-raised);
+    border: none;
+    border-radius: 980px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--sans);
+  }
+  .chat-input-row input:focus { outline: none; box-shadow: 0 0 0 2px var(--accent); }
+  .chat-input-row input::placeholder { color: var(--text-dim); }
+
+  .chat-input-row button {
+    padding: 10px 24px;
+    background: var(--accent);
+    border: none;
+    border-radius: 980px;
+    color: #fff;
+    font-weight: 600;
+    font-size: 13px;
+    font-family: var(--sans);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .chat-input-row button:hover { filter: brightness(1.1); }
+
+  .input-hint {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 6px;
+    font-family: var(--mono);
+  }
+  .input-hint kbd {
+    background: var(--bg-raised);
+    padding: 1px 4px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+  }
+
+  /* Status bar */
+  .statusbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 3px 20px;
+    background: var(--bg-surface);
+    border-top: 1px solid var(--border);
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .sb-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .sb-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+  }
+  .sb-dot.ok { background: var(--green); }
+  .sb-dot.off { background: var(--text-dim); }
+  .sb-label { color: var(--text-dim); }
+  .sb-val { color: var(--text-secondary); }
+
+  /* Suggested prompt panel */
+  .suggested-panel {
+    display: none;
+    padding: 10px 20px;
+    background: #fffbf0;
+    border-bottom: 1px solid var(--border);
+  }
+  [data-theme="dark"] .suggested-panel { background: #1a1810; border-color: #2a2510; }
+  .suggested-panel.visible { display: block; }
+  .suggested-panel .sp-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .suggested-panel .sp-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .suggested-panel .sp-count {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+  .suggested-panel .sp-dismiss {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+  }
+  .suggested-panel .sp-dismiss:hover { color: var(--text-primary); }
+  .suggested-panel .sp-edit {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: inherit;
+    resize: none;
+    line-height: 1.5;
+    min-height: 36px;
+    max-height: 120px;
+  }
+  .suggested-panel .sp-edit:focus { outline: none; border-color: var(--accent); }
+  .suggested-panel .sp-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .suggested-panel .sp-send {
+    padding: 5px 16px;
+    background: var(--accent);
+    border: none;
+    border-radius: 5px;
+    color: var(--bg-deep);
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .suggested-panel .sp-send:hover { background: var(--accent-hover); }
+  .suggested-panel .sp-cancel {
+    padding: 5px 12px;
+    background: none;
+    border: 1px solid var(--border-light);
+    border-radius: 5px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .suggested-panel .sp-cancel:hover { border-color: var(--red); color: var(--red); }
+  .suggested-panel .sp-countdown {
+    font-size: 10px;
+    color: var(--accent);
+    font-family: var(--mono);
+    font-weight: 700;
+  }
+  .suggested-panel .sp-hint {
+    font-size: 9px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    margin-left: auto;
+  }
+  .suggested-panel .sp-history {
+    margin-top: 8px;
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+  }
+  .suggested-panel .sp-history-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 4px;
+  }
+  .sp-history-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 3px 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    margin-bottom: 2px;
+  }
+  .sp-history-item:hover { background: var(--bg-surface); color: var(--text-secondary); }
+  .sp-history-item .sh-time {
+    font-family: var(--mono);
+    font-size: 9px;
+    opacity: 0.5;
+    white-space: nowrap;
+    padding-top: 2px;
+  }
+  .sp-history-item .sh-text {
+    flex: 1;
+    line-height: 1.4;
+  }
+  .sp-history-item .sh-use {
+    font-size: 9px;
+    color: var(--accent);
+    opacity: 0;
+    white-space: nowrap;
+    padding-top: 2px;
+  }
+  .sp-history-item:hover .sh-use { opacity: 1; }
+
+  /* Active mission banner */
+  .control-panel {
+    padding: 10px 20px;
+    background: var(--bg-surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .control-panel .cp-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .control-panel .cp-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    white-space: nowrap;
+    min-width: 60px;
+  }
+  .control-panel .cp-mission {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary);
+    font-weight: 500;
+    background: none;
+    border: none;
+    border-bottom: 1px solid transparent;
+    outline: none;
+    padding: 4px 0;
+    font-family: inherit;
+    line-height: 1.4;
+    transition: border-color 0.2s;
+  }
+  .cp-mission:hover { border-bottom-color: var(--border); }
+  .cp-mission:focus { border-bottom-color: var(--accent); }
+  .cp-mission:empty::before {
+    content: "Set a mission...";
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .cp-projects {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex: 1;
+  }
+  .cp-chip {
+    font-size: 10px;
+    font-family: var(--mono);
+    padding: 3px 10px;
+    border-radius: 980px;
+    border: none;
+    background: var(--bg-raised);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .cp-chip:hover { background: var(--border); color: var(--text-secondary); }
+  .cp-chip.active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 600;
+  }
+
+
+
+  .add-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+  }
+  .add-row input {
+    flex: 1;
+    padding: 4px 8px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 11px;
+  }
+  .add-row input:focus { outline: none; border-color: var(--accent); }
+  .add-row button {
+    padding: 4px 10px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border-light);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .thread-count {
+    font-size: 10px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+
+  /* Tab bar */
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 8px 20px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--sans);
+  }
+  .tab-btn:hover { color: var(--text-secondary); }
+  .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+  .tab-btn .tab-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 0 5px;
+    background: var(--bg-raised);
+    border-radius: 8px;
+    font-size: 9px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+  }
+
+  .tab-content { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+  .tab-content.active { display: flex; }
+
+  /* Findings tracker */
+  .goals-panel {
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+  }
+  .goals-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+  }
+  .goals-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+  .goals-toggle {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+  }
+  .goals-content {
+    margin-top: 8px;
+  }
+  .goals-content.collapsed {
+    display: none;
+  }
+  .mission-line {
+    font-size: 13px;
+    color: var(--text-secondary);
+    padding: 4px 0 8px;
+    font-style: italic;
+  }
+  .goal-project {
+    margin-bottom: 10px;
+  }
+  .goal-project-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+  }
+  .goal-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 4px 0 4px 12px;
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .goal-bullet {
+    color: var(--green);
+    font-size: 10px;
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+  .goal-bullet.brain { color: var(--text-muted); }
+  .goal-bullet.completed { color: var(--text-dim); }
+  .goal-meta {
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-left: 4px;
+  }
+  .goal-insights-count {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--border);
+    border-radius: 8px;
+    padding: 1px 6px;
+    margin-left: 4px;
+  }
+  .goal-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    flex-shrink: 0;
+  }
+  .goal-item:hover .goal-actions { opacity: 1; }
+  .goal-actions button {
+    font-size: 10px;
+    padding: 1px 4px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .goal-actions button:hover { background: var(--border); }
+  .goal-add-row {
+    display: flex;
+    gap: 4px;
+    padding: 4px 0 2px 12px;
+  }
+  .goal-add-row input {
+    flex: 1;
+    font-size: 11px;
+    padding: 3px 6px;
+    background: var(--bg-input, var(--bg-secondary));
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 3px;
+    outline: none;
+  }
+  .goal-add-row button {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: var(--accent);
+    border: none;
+    color: #fff;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .goals-add-project {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+  }
+  .goals-add-project input {
+    flex: 1;
+    font-size: 11px;
+    padding: 3px 6px;
+    background: var(--bg-input, var(--bg-secondary));
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    border-radius: 3px;
+    outline: none;
+  }
+  .goals-add-project button {
+    font-size: 10px;
+    padding: 2px 8px;
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  .tracker {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+  }
+  .tracker-group {
+    margin-bottom: 16px;
+  }
+  .tracker-group-header {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tracker-group-header.clickable { cursor: pointer; }
+  .tracker-group-header.clickable:hover { color: var(--text); }
+  .tracker-group-header .toggle-arrow { font-size: 10px; margin-left: auto; }
+  .collapsed { display: none; }
+  .tracker-section {
+    margin-bottom: 12px;
+  }
+  .tracker-section h3 {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tracker-section h3 .count {
+    font-family: var(--mono);
+    color: var(--text-dim);
+    font-weight: 400;
+  }
+  .finding-resolved {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border-subtle, rgba(255,255,255,0.03));
+  }
+  .finding-resolved .fc-title-inline {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .finding-resolved .fc-status {
+    font-size: 9px;
+    flex-shrink: 0;
+  }
+
+  .finding-card {
+    padding: 10px 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+  .finding-card .fc-type {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 2px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .fc-type.bug { background: var(--red-bg); color: var(--red); }
+  .fc-type.feature { background: var(--green-bg); color: var(--green); }
+  .fc-type.improvement { background: var(--blue-bg); color: var(--blue); }
+  .fc-type.debt { background: #1a1520; color: var(--purple); }
+  .fc-type.question { background: #1a1a10; color: var(--accent); }
+  .finding-card .fc-project {
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    padding: 2px 5px;
+    border-radius: 3px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+    background: rgba(255,255,255,0.04);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+  .finding-card .fc-body { flex: 1; min-width: 0; }
+  .finding-card .fc-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 2px;
+  }
+  .finding-card .fc-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+  .finding-card .fc-prompt {
+    font-size: 10px;
+    color: var(--accent);
+    background: rgba(255,200,50,0.06);
+    border-left: 2px solid var(--accent);
+    padding: 4px 8px;
+    margin-top: 4px;
+    line-height: 1.4;
+    max-height: 60px;
+    overflow: hidden;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .finding-card .fc-messages { margin-top: 6px; }
+  .finding-card .fc-msg {
+    font-size: 10px;
+    color: var(--text-secondary);
+    padding: 3px 8px;
+    margin-top: 2px;
+    border-left: 2px solid var(--border);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+  .fc-msg-status {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 1px 4px;
+    border-radius: 2px;
+    margin-right: 4px;
+  }
+  .fc-msg-status.pending { color: var(--accent); }
+  .fc-msg-status.sent { color: var(--green); }
+  .fc-msg-status.failed { color: var(--red); }
+  .finding-card .fc-file {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    margin-top: 3px;
+  }
+  .finding-card .fc-meta {
+    font-size: 9px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .finding-card .fc-status {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .fc-status.identified { background: var(--blue-bg); color: var(--blue); }
+  .fc-status.sent { background: #fff8ef; color: var(--orange); }
+  .fc-status.received { background: #f3f0f8; color: var(--purple); }
+  .fc-status.implemented { background: var(--green-bg); color: var(--green); }
+  .fc-status.ignored { background: var(--bg-raised); color: var(--text-muted); }
+  .fc-status.failed { background: var(--red-bg); color: var(--red); }
+  .fc-status.queued { background: #fff8ef; color: var(--orange); }
+  .fc-status.sending { background: var(--green-bg); color: var(--green); }
+  .fc-status.preview { background: #fff8ef; color: var(--orange); animation: preview-pulse 1s ease-in-out infinite; }
+  @keyframes preview-pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
+  .fc-status.held { background: #f3f0f8; color: var(--purple); }
+  .fc-status.resending { background: #fff8ef; color: var(--orange); }
+  .fc-type.message { background: #fff8ef; color: var(--orange); }
+  [data-theme="dark"] .fc-status.sent { background: #1a1a10; }
+  [data-theme="dark"] .fc-status.received { background: #1a1520; }
+  [data-theme="dark"] .fc-status.queued { background: #1a1a10; }
+  [data-theme="dark"] .fc-status.preview { background: #1f1a10; }
+  [data-theme="dark"] .fc-status.held { background: #1a1520; }
+  [data-theme="dark"] .fc-status.resending { background: #1a1a10; }
+  [data-theme="dark"] .fc-type.message { background: #1a1a10; }
+  .fc-id {
+    font-size: 9px;
+    font-family: var(--mono);
+    color: var(--text-dim);
+    margin-bottom: 2px;
+    word-break: break-all;
+  }
+  .finding-msg { padding: 0 !important; background: none !important; border: none !important; }
+  .finding-msg .finding-card { margin-bottom: 0; }
+
+  .file-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .file-tag {
+    font-size: 10px;
+    font-family: var(--mono);
+    padding: 2px 8px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+  }
+  .tracker-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  .screenshot-preview {
+    margin: 12px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg-raised);
+  }
+  .screenshot-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+  .screenshot-label { font-weight: 600; }
+  .screenshot-info { flex: 1; font-size: 10px; }
+  .screenshot-refresh {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 10px;
+  }
+  .screenshot-refresh:hover { background: var(--border); }
+  #screenshotImg {
+    width: 100%;
+    max-height: 200px;
+    object-fit: contain;
+    cursor: pointer;
+    display: block;
+    background: #000;
+  }
+  #screenshotImg.expanded {
+    max-height: none;
+  }
+
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border-light); }
+
+  /* CLI Tab */
+  .cli-status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 4px; background: #666; }
+  .cli-status-dot.idle { background: var(--success); }
+  .cli-status-dot.working { background: var(--accent); animation: pulse 1.5s ease-in-out infinite; }
+  .cli-status-dot.disconnected { background: #666; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  .cli-layout { display: grid; grid-template-columns: 320px 1fr; height: 100%; gap: 1px; background: var(--border); }
+  .cli-left { display: flex; flex-direction: column; background: var(--bg); overflow: hidden; }
+  .cli-topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .cli-session { font-size: 11px; color: var(--text-dim); font-family: monospace; }
+  .cli-status-badge { font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .cli-status-badge.idle { background: rgba(74,222,128,0.13); color: var(--success); }
+  .cli-status-badge.working { background: rgba(244,161,39,0.13); color: var(--accent); }
+  .cli-status-badge.disconnected { background: rgba(248,113,113,0.13); color: #f87171; }
+  .cli-auto-toggle { margin-left: auto; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .cli-auto-toggle label { font-size: 10px; color: var(--text-dim); cursor: pointer; text-transform: uppercase; }
+  .cli-toggle { width: 30px; height: 16px; background: #333; border-radius: 8px; position: relative; transition: background 0.2s; }
+  .cli-toggle.active { background: var(--accent); }
+  .cli-toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: white; border-radius: 50%; transition: transform 0.2s; }
+  .cli-toggle.active::after { transform: translateX(14px); }
+
+  .cli-presets { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .cli-presets button { font-size: 10px; padding: 3px 8px; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 3px; cursor: pointer; font-family: inherit; }
+  .cli-presets button:hover { color: var(--accent); border-color: var(--accent); }
+
+  .cli-queue { flex: 1; overflow-y: auto; padding: 8px; min-height: 60px; }
+  .cli-empty { text-align: center; color: #333; font-size: 11px; padding: 16px; }
+  .cli-queue-item { padding: 8px 10px; background: var(--surface); border-radius: 4px; margin-bottom: 4px; border: 1px solid var(--border); font-size: 12px; line-height: 1.4; }
+  .cli-queue-item .cli-item-actions { display: flex; gap: 4px; margin-top: 6px; }
+  .cli-queue-item .cli-item-actions button { font-size: 9px; padding: 2px 6px; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim); border-radius: 3px; cursor: pointer; font-family: inherit; }
+  .cli-queue-item .cli-item-actions button:hover { color: var(--text); border-color: var(--text-dim); }
+  .cli-queue-item .cli-item-actions button.remove:hover { color: #f87171; border-color: #f87171; }
+
+  .cli-history-header { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; padding: 6px 12px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .cli-history { max-height: 120px; overflow-y: auto; flex-shrink: 0; }
+  .cli-history-item { padding: 4px 12px; font-size: 10px; color: var(--text-dim); border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .cli-history-item .time { color: #444; margin-right: 6px; }
+  .cli-history-item .badge { font-size: 9px; padding: 1px 4px; border-radius: 2px; margin-right: 4px; }
+  .cli-history-item .badge.auto { background: rgba(244,161,39,0.13); color: var(--accent); }
+  .cli-history-item .badge.manual { background: rgba(96,165,250,0.13); color: #60a5fa; }
+
+  .cli-input-area { padding: 10px 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .cli-input-area textarea { width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text); font-family: inherit; font-size: 12px; padding: 8px; border-radius: 4px; resize: none; height: 64px; outline: none; }
+  .cli-input-area textarea:focus { border-color: var(--accent); }
+  .cli-buttons { display: flex; gap: 6px; margin-top: 6px; }
+  .cli-btn-queue, .cli-btn-send { flex: 1; padding: 6px; font-family: inherit; font-size: 11px; border-radius: 3px; cursor: pointer; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border: 1px solid var(--border); }
+  .cli-btn-queue { background: var(--surface); color: var(--text); }
+  .cli-btn-queue:hover { background: var(--border); }
+  .cli-btn-send { background: var(--accent); color: #000; border-color: var(--accent); }
+  .cli-btn-send:hover { opacity: 0.9; }
+
+  .cli-terminal { background: #0a0a0a; overflow-y: auto; font-family: 'SF Mono', 'Fira Code', monospace; }
+  .cli-terminal pre { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; padding: 12px; color: #aaa; margin: 0; }
+  .cli-terminal .prompt { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <div class="header-left">
+      <h1>Autopilot</h1>
+      <div class="cycle-progress" id="cycleProgress">
+        <div class="cp-track-fill" id="cpTrackFill"></div>
+        <div class="cp-sweep"></div>
+        <div class="cp-flash" id="cpFlash"></div>
+        <div class="cycle-dots" id="cycleDots"></div>
+      </div>
+      <span class="cp-countdown" id="cycleCountdown"></span>
+      <span class="cp-cycle-num" id="cycles">0</span>
+    </div>
+    <div class="header-right">
+      <button class="btn" onclick="toggleRunning()" id="toggleBtn">Start</button>
+      <button class="btn" onclick="toggleMute()" id="muteBtn" title="Mute: brain runs but no messages sent">Mute</button>
+      <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle" title="Toggle light/dark mode">&#9680;</button>
+    </div>
+  </div>
+  <input id="interval" type="hidden" value="90" onchange="updateInterval()">
+
+  <div class="control-panel" id="controlPanel">
+    <div class="cp-row">
+      <span class="cp-label">Mission</span>
+      <div class="cp-mission" id="missionText" contenteditable="true"></div>
+    </div>
+    <div class="cp-row">
+      <span class="cp-label">Projects</span>
+      <div class="cp-projects" id="projectChips"></div>
+    </div>
+  </div>
+
+  <div class="suggested-panel" id="suggestedPanel">
+    <div class="sp-header">
+      <span class="sp-label" id="spTitle">Suggested Prompt</span>
+      <span class="sp-count" id="spCount"></span>
+      <button class="sp-dismiss" onclick="dismissSuggested()" title="Dismiss">&times;</button>
+    </div>
+    <textarea class="sp-edit" id="spEdit" rows="2" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';pauseAutoSend()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendSuggested()}" style="display:none"></textarea>
+    <div class="sp-actions">
+      <button class="sp-send" onclick="sendSuggested()" title="Approve and send this suggestion">Send</button>
+      <button class="sp-cancel" onclick="rejectSuggested()" title="Reject this suggestion" style="border-color:var(--red);color:var(--red)">Reject</button>
+      <button class="sp-cancel" onclick="toggleSpEdit()" id="spExpandBtn">Edit</button>
+      <span class="sp-countdown" id="spCountdown"></span>
+      <span class="sp-hint">auto-sends in countdown</span>
+    </div>
+    <div class="sp-history" id="spHistory"></div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('chat')">Chat</button>
+    <button class="tab-btn" onclick="switchTab('tracker')">Tracker <span class="tab-badge" id="findingsBadge">0</span></button>
+    <button class="tab-btn" onclick="switchTab('cli')">CLI <span class="cli-status-dot" id="cliDot"></span></button>
+  </div>
+
+  <div class="tab-content active" id="tab-chat">
+    <div class="chat" id="chat">
+      <div class="msg system">Brain online. Type a message to chat, or start the auto-cycle.</div>
+      <div class="activity-panel" id="activity"></div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-tracker">
+    <div class="screenshot-preview" id="screenshotPreview">
+      <div class="screenshot-header">
+        <span class="screenshot-label">Latest Screenshot</span>
+        <span class="screenshot-info" id="screenshotInfo">—</span>
+        <button class="screenshot-refresh" onclick="refreshScreenshot()">Refresh</button>
+      </div>
+      <div id="screenshotPlaceholder" style="text-align:center;padding:20px;color:var(--text-dim);font-size:11px;">No screenshot yet — waiting for first cycle</div>
+      <img id="screenshotImg" style="display:none" alt="Latest screenshot" onclick="this.classList.toggle('expanded')">
+    </div>
+    <div class="goals-panel" id="goalsPanel">
+      <div class="goals-header" onclick="toggleGoals()">
+        <span class="goals-title">Mission & Goals</span>
+        <button class="goals-toggle" id="goalsToggle">▸</button>
+      </div>
+      <div class="goals-content collapsed" id="goalsContent">
+        <div class="goals-tree" id="goalsTree"></div>
+      </div>
+    </div>
+    <div class="tracker" id="tracker">
+      <div class="tracker-empty">No insights yet. Start the autopilot to begin tracking.</div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-cli">
+    <div class="cli-layout">
+      <div class="cli-left">
+        <div class="cli-topbar">
+          <span class="cli-session" id="cliSession">tmux: —</span>
+          <span class="cli-status-badge" id="cliBadge">disconnected</span>
+          <div class="cli-auto-toggle" onclick="cliToggleAuto()">
+            <label>Auto</label>
+            <div class="cli-toggle" id="cliAutoToggle"></div>
+          </div>
+        </div>
+        <div class="cli-presets">
+          <button onclick="cliPreset('polish')">Polish</button>
+          <button onclick="cliPreset('visual')">Visual</button>
+          <button onclick="cliPreset('bugs')">Fix Bugs</button>
+          <button onclick="cliPreset('review')">Review</button>
+          <button onclick="cliPreset('continue')">Continue</button>
+        </div>
+        <div class="cli-queue" id="cliQueue">
+          <div class="cli-empty">Queue empty</div>
+        </div>
+        <div class="cli-history-header">Sent <span id="cliHistoryCount">0</span></div>
+        <div class="cli-history" id="cliHistory"></div>
+        <div class="cli-input-area">
+          <textarea id="cliInput" placeholder="Message for Claude Code..." onkeydown="cliHandleKey(event)"></textarea>
+          <div class="cli-buttons">
+            <button class="cli-btn-queue" onclick="cliAddToQueue()">+ Queue</button>
+            <button class="cli-btn-send" onclick="cliSendNow()">Send Now</button>
+          </div>
+        </div>
+      </div>
+      <div class="cli-terminal" id="cliTerminal">
+        <pre id="cliTerminalContent">Waiting for tmux session...</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-area">
+    <div class="chat-input-row">
+      <input id="chatInput" type="text" placeholder="Talk to the brain..."
+        onkeydown="handleInputKey(event)">
+      <button onclick="sendChat()">Send</button>
+    </div>
+    <div class="input-hint">
+      <kbd>Enter</kbd> chat with brain &mdash;
+      <kbd>Shift+Enter</kbd> send directly to Claude Desktop
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <div class="sb-item">
+      <span class="sb-dot ok" id="connDot"></span>
+      <span class="sb-label">WS</span>
+      <span class="sb-val" id="connStatus">Connected</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-label">Brain</span>
+      <span class="sb-val" id="brainModel">opus-4-6</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-label">Memory</span>
+      <span class="sb-val" id="memoryCount">-</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-label">Threads</span>
+      <span class="sb-val" id="threadCountStatus">scanning...</span>
+    </div>
+    <div class="sb-item">
+      <span class="sb-label">Uptime</span>
+      <span class="sb-val" id="uptimeVal">-</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// Theme toggle
+function initTheme() {
+  const saved = localStorage.getItem('autopilot-theme') || 'light';
+  if (saved === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  updateThemeIcon(saved);
+}
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'light';
+  const next = current === 'dark' ? 'light' : 'dark';
+  if (next === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  else document.documentElement.removeAttribute('data-theme');
+  localStorage.setItem('autopilot-theme', next);
+  updateThemeIcon(next);
+}
+function updateThemeIcon(theme) {
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.innerHTML = theme === 'dark' ? '&#9680;' : '&#9681;';
+}
+initTheme();
+
+let ws;
+let currentState = {};
+let traceLog = [];
+let isLive = false;
+let currentSuggested = null;
+let currentSuggestedFindingId = null;
+let suggestedHistory = [];
+let autoSendTimer = null;
+let autoSendCountdown = 0;
+let autoSendInterval = null;
+
+function connect() {
+  ws = new WebSocket("ws://" + location.host);
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+
+    if (msg.type === "state") {
+      currentState = msg;
+      updateUI(msg);
+      renderCli(msg);
+    } else if (msg.type === "chat") {
+      appendMsg(msg.entry);
+    } else if (msg.type === "chatLog") {
+      const chat = document.getElementById("chat");
+      chat.innerHTML = "";
+      msg.messages.forEach(appendMsg);
+      isLive = true;
+    } else if (msg.type === "brainStart") {
+      traceLog = [];
+      const panel = document.getElementById("activity");
+      panel.innerHTML = '';
+      panel.classList.add("visible");
+      setCycleStep('screenshot');
+      flashBar('screenshot');
+      setTimeout(() => setCycleStep('idle-check'), 500);
+      setTimeout(() => setCycleStep('brain'), 1500);
+      scrollChat();
+    } else if (msg.type === "brainEvent") {
+      handleBrainEvent(msg);
+    } else if (msg.type === "brainDone") {
+      const panel = document.getElementById("activity");
+      panel.classList.remove("visible");
+      panel.innerHTML = "";
+      setCycleStep('idle');
+    } else if (msg.type === "suggestedPrompt") {
+      currentSuggested = msg.prompt;
+      currentSuggestedFindingId = msg.findingId || null;
+      const edit = document.getElementById("spEdit");
+      edit.value = msg.prompt;
+      edit.style.display = 'none';
+      // Show short title or fall back to truncated prompt
+      const title = msg.title || msg.prompt.slice(0, 60);
+      document.getElementById("spTitle").textContent = title;
+      document.getElementById("spExpandBtn").textContent = 'Edit';
+      document.getElementById("suggestedPanel").classList.add("visible");
+      // Track history (keep 10)
+      suggestedHistory.unshift({ prompt: msg.prompt, title: title, time: new Date().toLocaleTimeString(), cycle: currentState.cycleCount || 0 });
+      if (suggestedHistory.length > 10) suggestedHistory.pop();
+      renderSuggestedHistory();
+      // Start auto-send countdown (8 seconds)
+      startAutoSend(8);
+    } else if (msg.type === "findingUpdate") {
+      // Update existing finding card in-place
+      const card = document.querySelector(`[data-finding-id="${msg.id}"]`);
+      if (card) {
+        const badge = card.querySelector('.fc-status');
+        if (badge) {
+          badge.className = 'fc-status ' + escAttr(msg.status);
+          badge.textContent = msg.status;
+        }
+        // Add or update prompt display on the card
+        if (msg.prompt) {
+          let promptEl = card.querySelector('.fc-prompt');
+          if (!promptEl) {
+            promptEl = document.createElement('div');
+            promptEl.className = 'fc-prompt';
+            const body = card.querySelector('.fc-body');
+            if (body) body.appendChild(promptEl);
+          }
+          promptEl.textContent = msg.prompt;
+        }
+      }
+    } else if (msg.type === "sendCountdown") {
+      // Update finding card with countdown badge
+      const card = document.querySelector(`[data-finding-id="${msg.findingId}"]`);
+      if (card) {
+        const badge = card.querySelector('.fc-status');
+        if (badge && msg.remaining > 0) {
+          badge.className = 'fc-status preview';
+          badge.textContent = `sending ${msg.remaining}s`;
+        }
+      }
+    } else if (msg.type === "cli_terminal") {
+      renderCliTerminal(msg.content);
+    }
+  };
+
+  ws.onopen = () => {
+    document.getElementById("connDot").className = "sb-dot ok";
+    document.getElementById("connStatus").textContent = "Connected";
+  };
+  ws.onclose = () => {
+    document.getElementById("connDot").className = "sb-dot off";
+    document.getElementById("connStatus").textContent = "Reconnecting...";
+    setTimeout(connect, 2000);
+  };
+}
+
+let cycleProgressStep = 'idle';
+let countdownInterval = null;
+let countdownTarget = 0;
+
+function setCycleStep(step) {
+  cycleProgressStep = step;
+  const steps = ['idle', 'screenshot', 'idle-check', 'brain', 'send'];
+  const activeIdx = steps.indexOf(step);
+  const progress = document.getElementById('cycleProgress');
+  const fill = document.getElementById('cpTrackFill');
+
+  // Fill bar: percentage based on active step
+  const pct = activeIdx <= 0 ? 0 : (activeIdx / (steps.length - 1)) * 100;
+  fill.style.width = pct + '%';
+
+  // Animation classes
+  progress.classList.toggle('animating', activeIdx > 0);
+  progress.classList.toggle('stopped', activeIdx === 0);
+
+  // Countdown breathe effect when idle
+  const countdown = document.getElementById('cycleCountdown');
+  if (countdown) countdown.classList.toggle('breathing', step === 'idle');
+}
+
+function startCountdown(seconds) {
+  if (countdownInterval) clearInterval(countdownInterval);
+  countdownTarget = Date.now() + seconds * 1000;
+  const el = document.getElementById('cycleCountdown');
+  countdownInterval = setInterval(() => {
+    const remaining = Math.max(0, Math.ceil((countdownTarget - Date.now()) / 1000));
+    el.textContent = remaining > 0 ? remaining + 's' : '';
+    if (remaining <= 0) clearInterval(countdownInterval);
+  }, 1000);
+}
+
+function updateUI(s) {
+  // Progress tracker
+  if (s.state === 'IDLE') {
+    setCycleStep('idle');
+    if (s.running && s.interval) startCountdown(s.interval);
+  } else if (s.state === 'CHECKING') {
+    setCycleStep('brain');
+    if (countdownInterval) { clearInterval(countdownInterval); document.getElementById('cycleCountdown').textContent = ''; }
+  } else if (s.state === 'WAITING') {
+    setCycleStep('send');
+  }
+
+  document.getElementById("toggleBtn").textContent = s.running ? "Stop" : "Start";
+  document.getElementById("toggleBtn").className = s.running ? "btn active" : "btn";
+  const muteBtn = document.getElementById("muteBtn");
+  const qc = s.queuedFindings || 0;
+  muteBtn.textContent = s.muteMode ? (qc > 0 ? `Unmute (${qc})` : "Unmute") : "Mute";
+  muteBtn.style.background = s.muteMode ? "#dc2626" : "";
+  muteBtn.title = s.muteMode && qc > 0 ? `${qc} finding(s) queued — click to unmute` : "Mute: brain runs but sends are held";
+  document.getElementById("cycles").textContent = s.cycleCount || 0;
+  if (s.interval) document.getElementById("interval").value = s.interval;
+  // Mission — only update if not focused (user might be typing)
+  const missionEl = document.getElementById("missionText");
+  if (document.activeElement !== missionEl) {
+    missionEl.textContent = (s.goals && s.goals.mission) || s.guidance || "";
+  }
+  // Project chips
+  renderProjectChips(s.allProjects || [], s.activeProjects || []);
+  if (s.brainModel) document.getElementById("brainModel").textContent = s.brainModel;
+  if (s.memoryFiles !== undefined) document.getElementById("memoryCount").textContent = s.memoryFiles + " files";
+  if (s.uptime !== undefined) document.getElementById("uptimeVal").textContent = fmtUptime(s.uptime);
+  if (s.cycleHistory) renderCycleHistory(s.cycleHistory);
+  if (s.findings) renderTracker(s.findings, s.filesInvestigated || []);
+  if (s.goals) renderGoals(s.goals);
+  // Update screenshot mode label
+  if (s.screenshotMode) {
+    const info = document.getElementById("screenshotInfo");
+    const mode = s.screenshotDisabled ? "disabled" : s.screenshotMode;
+    info.textContent = mode;
+  }
+  // Refresh screenshot at most every 10s on state updates
+  const now = Date.now();
+  if (now - lastScreenshotRefresh > 10000) {
+    lastScreenshotRefresh = now;
+    refreshScreenshot();
+  }
+}
+
+function handleBrainEvent(msg) {
+  const panel = document.getElementById("activity");
+  const e = msg.event;
+
+  if (e === "thinking_start") {
+    traceLog.push({ type: "thinking", status: "active" });
+    panel.innerHTML = activityHTML();
+  } else if (e === "thinking_delta") {
+    const last = traceLog.findLast(t => t.type === "thinking");
+    if (last) last.chars = msg.length;
+    panel.innerHTML = activityHTML();
+  } else if (e === "thinking_done") {
+    const last = traceLog.findLast(t => t.type === "thinking");
+    if (last) { last.status = "done"; last.chars = msg.length; }
+    panel.innerHTML = activityHTML();
+  } else if (e === "tool_start") {
+    traceLog.push({ type: "tool_start", name: msg.name, status: "active" });
+    panel.innerHTML = activityHTML();
+  } else if (e === "tool_use") {
+    // Complete tool use info from assistant message
+    const existing = traceLog.findLast(t => t.type === "tool_start" && t.name === msg.name && t.status === "active");
+    if (existing) {
+      existing.input = msg.input;
+    } else {
+      traceLog.push({ type: "tool_start", name: msg.name, input: msg.input, status: "active" });
+    }
+    panel.innerHTML = activityHTML();
+  } else if (e === "tool_result") {
+    const last = traceLog.findLast(t => t.type === "tool_start" && t.status === "active");
+    if (last) last.status = "done";
+    traceLog.push({ type: "tool_result", summary: msg.summary });
+    panel.innerHTML = activityHTML();
+  } else if (e === "text_start" || e === "text_delta") {
+    // Text streaming — show in activity
+    if (!traceLog.find(t => t.type === "text")) {
+      traceLog.push({ type: "text" });
+      panel.innerHTML = activityHTML();
+    }
+  } else if (e === "result") {
+    traceLog.push({ type: "result", usage: msg.usage, duration: msg.duration, numTurns: msg.numTurns });
+    panel.innerHTML = activityHTML();
+  }
+
+  scrollChat();
+}
+
+function activityHTML() {
+  // Show only the latest item — one line
+  const item = traceLog[traceLog.length - 1];
+  if (!item) return '';
+  if (item.type === "thinking") {
+    const label = item.chars ? `thinking (${fmtTokens(item.chars)} chars)` : 'thinking...';
+    return `<div class="activity-item thinking"><span class="spinner"></span> ${label}</div>`;
+  } else if (item.type === "tool_start") {
+    const spin = item.status === "active" ? '<span class="spinner"></span>' : '~';
+    const detail = item.input ? ` ${escHtml(item.input)}` : '';
+    return `<div class="activity-item tool">${spin} ${escHtml(item.name)}${detail}</div>`;
+  } else if (item.type === "text") {
+    return `<div class="activity-item text"><span class="spinner"></span> composing reply...</div>`;
+  } else if (item.type === "result") {
+    const parts = [];
+    if (item.usage) {
+      const inp = item.usage.input_tokens || 0;
+      const out = item.usage.output_tokens || 0;
+      parts.push(`${fmtTokens(inp + out)} tokens`);
+    }
+    if (item.duration) parts.push(`${(item.duration / 1000).toFixed(1)}s`);
+    return `<div class="activity-item done">~ ${parts.join(' · ')}</div>`;
+  }
+  return '';
+}
+
+function fmtTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function scrollChat() {
+  const chat = document.getElementById("chat");
+  const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 80;
+  if (atBottom) chat.scrollTop = chat.scrollHeight;
+}
+
+function buildTraceBlock(log, meta) {
+  // Summary tags for the collapsed header
+  const tags = [];
+  const toolCount = log.filter(t => t.type === "tool_start").length;
+  const resultItem = log.find(t => t.type === "result");
+
+  if (resultItem) {
+    if (resultItem.usage) {
+      const total = (resultItem.usage.input_tokens || 0) + (resultItem.usage.output_tokens || 0);
+      tags.push(`<span class="trace-tag tokens">${fmtTokens(total)} tokens</span>`);
+    }
+    if (resultItem.duration) tags.push(`<span class="trace-tag cost">${(resultItem.duration / 1000).toFixed(1)}s</span>`);
+  } else if (meta) {
+    if (meta.usage) {
+      const total = (meta.usage.input_tokens || 0) + (meta.usage.output_tokens || 0);
+      tags.push(`<span class="trace-tag tokens">${fmtTokens(total)} tokens</span>`);
+    }
+    if (meta.duration) tags.push(`<span class="trace-tag cost">${(meta.duration / 1000).toFixed(1)}s</span>`);
+  }
+  if (toolCount > 0) tags.push(`<span class="trace-tag tools">${toolCount} tool${toolCount > 1 ? 's' : ''}</span>`);
+
+  let inner = '';
+  for (const item of log) {
+    if (item.type === "thinking") {
+      const chars = item.chars ? ` (${fmtTokens(item.chars)} chars)` : '';
+      inner += `<div class="trace-entry te-thinking"><span class="te-icon">~</span> <span class="te-name">thinking</span><span class="te-detail">${chars}</span></div>`;
+    } else if (item.type === "tool_start") {
+      const detail = item.input ? `<span class="te-detail">${escHtml(item.input)}</span>` : '';
+      inner += `<div class="trace-entry te-tool"><span class="te-icon">~</span> <span class="te-name">${escHtml(item.name)}</span> ${detail}</div>`;
+    } else if (item.type === "result") {
+      const parts = [];
+      if (item.usage) {
+        parts.push(`${fmtTokens(item.usage.input_tokens || 0)} in / ${fmtTokens(item.usage.output_tokens || 0)} out`);
+        if (item.usage.cache_read_input_tokens) parts.push(`${fmtTokens(item.usage.cache_read_input_tokens)} cached`);
+      }
+      if (item.numTurns > 1) parts.push(`${item.numTurns} turns`);
+      if (parts.length) inner += `<div class="trace-entry te-result"><span class="te-icon">~</span> ${parts.join(' · ')}</div>`;
+    }
+  }
+
+  return `<details class="trace-block"><summary><span class="trace-tags">${tags.join('')}</span></summary><div class="trace-content">${inner}</div></details>`;
+}
+
+function classifyBrainMsg(text) {
+  const t = text.toLowerCase();
+  if (t.includes('?') && (t.includes('should') || t.includes('want') || t.includes('consider') || t.includes('what if') || t.includes('how about'))) return 'question';
+  if (t.includes('suggest') || t.includes('fix:') || t.includes('ready to') || t.includes('implement') || t.includes('should') || t.includes('could add') || t.includes('would improve')) return 'suggestion';
+  return 'observation';
+}
+
+function relativeTime(timeStr) {
+  // Parse time like "11:07:08 PM" or "7:34:00 PM"
+  if (!timeStr) return '';
+  const now = new Date();
+  const parts = timeStr.match(/(\d+):(\d+):(\d+)\s*(AM|PM)/i);
+  if (!parts) return timeStr;
+  let h = parseInt(parts[1]);
+  const m = parseInt(parts[2]);
+  const ampm = parts[4].toUpperCase();
+  if (ampm === 'PM' && h < 12) h += 12;
+  if (ampm === 'AM' && h === 12) h = 0;
+  const msgDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m);
+  const diffMs = now - msgDate;
+  if (diffMs < 0 || diffMs > 86400000) return timeStr;
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + 'm ago';
+  const diffHr = Math.floor(diffMin / 60);
+  return diffHr + 'h ago';
+}
+
+function appendMsg(entry) {
+  const chat = document.getElementById("chat");
+  const div = document.createElement("div");
+
+  if (entry.role === "brain") {
+    const msgType = classifyBrainMsg(entry.text);
+    div.className = "msg brain type-" + msgType + (entry.auto ? " auto" : "");
+    let html = '';
+    // Build trace block from collected activity (only for live messages)
+    if (isLive && traceLog.length > 0) {
+      const log = traceLog;
+      traceLog = [];
+      html += buildTraceBlock(log, entry.meta);
+    }
+    const typeBadge = `<span class="msg-type-badge ${msgType}">${msgType}</span>`;
+    const relTime = `<span class="msg-time-rel">${relativeTime(entry.time)}</span>`;
+    html += '<div class="msg-meta"><span class="label">Brain</span> ' + typeBadge + ' ' + relTime + '</div>';
+    html += '<div>' + escHtml(entry.text) + '</div>';
+    div.innerHTML = html;
+  } else if (entry.role === "user") {
+    div.className = "msg user";
+    const relTime = `<span class="msg-time-rel">${relativeTime(entry.time)}</span>`;
+    div.innerHTML = '<div class="msg-meta"><span class="label">You</span> ' + relTime + '</div>' +
+      '<div>' + escHtml(entry.text) + '</div>';
+  } else if (entry.role === "finding" && entry.finding) {
+    if (isLive) flashBar('insight');
+    const f = entry.finding;
+    div.className = "msg finding-msg";
+    div.setAttribute("data-finding-id", f.id);
+    const prompt = f.pendingPrompt || f.sentPrompt || null;
+    div.innerHTML = `<div class="finding-card">
+      <span class="fc-type ${escAttr(f.type)}">${escHtml(f.type)}</span>
+      <div class="fc-body">
+        <div class="fc-title">${escHtml(f.title)}</div>
+        ${f.detail ? `<div class="fc-detail">${escHtml(f.detail)}</div>` : ''}
+        ${f.file ? `<div class="fc-file">${escHtml(f.file)}</div>` : ''}
+        ${prompt ? `<div class="fc-prompt">${escHtml(prompt)}</div>` : ''}
+      </div>
+      <div class="fc-meta">
+        <span class="fc-id" title="Finding ID">${escHtml(f.id)}</span>
+        <span class="fc-status ${escAttr(f.status || 'identified')}">${escHtml(f.status || 'identified')}</span>
+      </div>
+    </div>`;
+  } else if (entry.role === "sent") {
+    div.className = "msg sent";
+    div.textContent = entry.text;
+  } else if (entry.role === "error") {
+    div.className = "msg error";
+    div.textContent = entry.text;
+  } else {
+    div.className = "msg system";
+    div.textContent = entry.text;
+  }
+
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function sendChat() {
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim();
+  if (!text || !ws) return;
+  ws.send(JSON.stringify({ action: "chat", text }));
+  input.value = "";
+}
+
+function sendDirect() {
+  const input = document.getElementById("chatInput");
+  const text = input.value.trim();
+  if (!text || !ws) return;
+  ws.send(JSON.stringify({ action: "sendDirect", text }));
+  input.value = "";
+}
+
+function handleInputKey(e) {
+  if (e.key === "Enter" && e.shiftKey) {
+    e.preventDefault();
+    sendDirect();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    sendChat();
+  }
+}
+
+function renderProjectChips(all, active) {
+  const container = document.getElementById("projectChips");
+  container.innerHTML = "";
+  for (const p of all) {
+    const chip = document.createElement("button");
+    chip.className = "cp-chip" + (active.includes(p) ? " active" : "");
+    chip.textContent = p;
+    chip.onclick = () => toggleProject(p);
+    container.appendChild(chip);
+  }
+}
+function toggleProject(name) {
+  const chips = document.querySelectorAll(".cp-chip");
+  let active = [];
+  chips.forEach(c => {
+    if (c.textContent === name) c.classList.toggle("active");
+    if (c.classList.contains("active")) active.push(c.textContent);
+  });
+  if (ws) ws.send(JSON.stringify({ action: "setProjects", projects: active }));
+}
+// Mission save on blur
+document.getElementById("missionText").addEventListener("blur", function() {
+  const text = this.textContent.trim();
+  if (ws) ws.send(JSON.stringify({ action: "guide", text }));
+});
+document.getElementById("missionText").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") { e.preventDefault(); this.blur(); }
+});
+
+function toggleRunning() {
+  if (!ws) return;
+  ws.send(JSON.stringify({ action: currentState.running ? "stop" : "start" }));
+}
+
+function toggleMute() {
+  if (!ws) return;
+  ws.send(JSON.stringify({ action: "toggleMute" }));
+}
+
+function queueContinue() {
+  fetch("/api/queue-continue", { method: "POST" })
+    .then(r => r.json())
+    .then(d => { document.getElementById("continueBtn").textContent = d.queued > 0 ? `Continue (${d.queued})` : "Continue"; })
+    .catch(() => {});
+}
+
+function updateInterval() {
+  const val = parseInt(document.getElementById("interval").value) || 90;
+  if (ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ action: "settings", settings: { interval: val } }));
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+}
+
+function fmtUptime(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  const h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m";
+}
+
+function startAutoSend(seconds) {
+  cancelAutoSend();
+  autoSendCountdown = seconds;
+  document.getElementById("spCountdown").textContent = seconds + 's';
+  autoSendInterval = setInterval(() => {
+    autoSendCountdown--;
+    document.getElementById("spCountdown").textContent = autoSendCountdown > 0 ? autoSendCountdown + 's' : '';
+    if (autoSendCountdown <= 0) {
+      clearInterval(autoSendInterval);
+      autoSendInterval = null;
+      sendSuggested();
+    }
+  }, 1000);
+}
+
+function pauseAutoSend() {
+  if (autoSendInterval) {
+    clearInterval(autoSendInterval);
+    autoSendInterval = null;
+    document.getElementById("spCountdown").textContent = 'paused';
+  }
+}
+
+function cancelAutoSend() {
+  if (autoSendInterval) { clearInterval(autoSendInterval); autoSendInterval = null; }
+  autoSendCountdown = 0;
+  document.getElementById("spCountdown").textContent = '';
+}
+
+function sendSuggested() {
+  cancelAutoSend();
+  const edit = document.getElementById("spEdit");
+  const prompt = edit.value.trim();
+  if (prompt && ws) {
+    // Server handles both send AND finding status update (only marks "sent" on success)
+    ws.send(JSON.stringify({ action: "sendSuggested", prompt, findingId: currentSuggestedFindingId || null }));
+    document.getElementById("suggestedPanel").classList.remove("visible");
+    currentSuggested = null;
+    currentSuggestedFindingId = null;
+    edit.value = "";
+  }
+}
+
+function dismissSuggested() {
+  cancelAutoSend();
+  document.getElementById("suggestedPanel").classList.remove("visible");
+  currentSuggested = null;
+  currentSuggestedFindingId = null;
+}
+
+function rateFinding(findingId, rating) {
+  if (ws) ws.send(JSON.stringify({ action: "rateFinding", findingId, rating }));
+}
+function dismissFinding(findingId) {
+  if (ws) ws.send(JSON.stringify({ action: "dismissFinding", findingId }));
+}
+function dismissAllFindings() {
+  if (ws) ws.send(JSON.stringify({ action: "dismissAllFindings" }));
+}
+
+function rejectSuggested() {
+  cancelAutoSend();
+  if (currentSuggestedFindingId && ws) {
+    ws.send(JSON.stringify({ action: "updateFinding", findingId: currentSuggestedFindingId, status: "ignored" }));
+  }
+  appendMsg({ role: "system", text: "Rejected suggestion", time: new Date().toLocaleTimeString() });
+  document.getElementById("suggestedPanel").classList.remove("visible");
+  currentSuggested = null;
+  currentSuggestedFindingId = null;
+}
+
+function renderSuggestedHistory() {
+  const el = document.getElementById("spHistory");
+  const count = document.getElementById("spCount");
+  if (suggestedHistory.length <= 1) {
+    el.innerHTML = "";
+    count.textContent = "";
+    return;
+  }
+  count.textContent = `(${suggestedHistory.length} total)`;
+  // Show previous suggestions (skip current which is index 0)
+  el.innerHTML = '<div class="sp-history-label">Previous suggestions</div>' +
+    suggestedHistory.slice(1).map(s =>
+      `<div class="sp-history-item" onclick="useSuggestion(this)" data-prompt="${escAttr(s.prompt)}"><span class="sh-time">${s.time}</span><span class="sh-text">${escHtml(s.title || s.prompt.slice(0, 60))}</span><span class="sh-use">use</span></div>`
+    ).join("");
+}
+
+function useSuggestion(el) {
+  const prompt = el.dataset.prompt;
+  currentSuggested = prompt;
+  document.getElementById("spEdit").value = prompt;
+  document.getElementById("suggestedPanel").classList.add("visible");
+  document.getElementById("spEdit").focus();
+}
+
+function scanThreads() {
+  if (ws) ws.send(JSON.stringify({ action: "scanThreads" }));
+}
+
+function escAttr(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function renderCycleHistory(history) {
+  const el = document.getElementById("cycleDots");
+  if (!history || history.length === 0) { el.innerHTML = ''; return; }
+  const segs = [...history].reverse().slice(-30);
+  let html = '';
+  for (const c of segs) {
+    const dur = (c.duration || 0) / 1000;
+    const cls = c.status === "error" ? "error" : c.sent ? "sent" : dur > 60 ? "slow" : "active";
+    html += `<div class="cd-seg ${cls}" title="#${c.cycle} ${dur.toFixed(0)}s${c.sent ? ' sent' : ''}"></div>`;
+  }
+  el.innerHTML = html;
+}
+
+function flashBar(type) {
+  const flash = document.getElementById('cpFlash');
+  if (!flash) return;
+  flash.className = 'cp-flash';
+  // Force reflow to restart animation
+  void flash.offsetWidth;
+  flash.classList.add(type);
+  setTimeout(() => { flash.className = 'cp-flash'; }, type === 'screenshot' ? 400 : 800);
+}
+
+// Tab switching
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab-btn[onclick*="${tab}"]`).classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ action: "switchTab", tab }));
+}
+
+// Toggle full prompt editor
+function toggleSpEdit() {
+  const edit = document.getElementById("spEdit");
+  const btn = document.getElementById("spExpandBtn");
+  if (edit.style.display === 'none') {
+    edit.style.display = 'block';
+    edit.style.height = 'auto';
+    edit.style.height = Math.min(edit.scrollHeight, 120) + 'px';
+    btn.textContent = 'Hide';
+    edit.focus();
+  } else {
+    edit.style.display = 'none';
+    btn.textContent = 'Edit';
+  }
+}
+
+function refreshScreenshot() {
+  const img = document.getElementById("screenshotImg");
+  const placeholder = document.getElementById("screenshotPlaceholder");
+  img.src = "/api/screenshot?t=" + Date.now();
+  img.onload = () => {
+    img.style.display = "block";
+    if (placeholder) placeholder.style.display = "none";
+    const info = document.getElementById("screenshotInfo");
+    info.textContent = `${img.naturalWidth}x${img.naturalHeight} — ${new Date().toLocaleTimeString()}`;
+  };
+  img.onerror = () => {
+    img.style.display = "none";
+    if (placeholder) placeholder.style.display = "block";
+    document.getElementById("screenshotInfo").textContent = "No screenshot available";
+  };
+}
+// Auto-refresh screenshot on state updates
+let lastScreenshotRefresh = 0;
+
+function renderFindingCard(f) {
+  const age = f.firstSeen ? timeSince(f.firstSeen) : '';
+  const msgs = f.messages || [];
+  let msgHtml = '';
+  if (msgs.length) {
+    msgHtml = '<div class="fc-messages">';
+    for (const m of msgs.slice(-3)) { // show last 3 messages
+      const mStatus = m.status || 'pending';
+      msgHtml += `<div class="fc-msg"><span class="fc-msg-status ${escAttr(mStatus)}">${mStatus}</span> ${escHtml(m.text.slice(0, 150))}</div>`;
+    }
+    if (msgs.length > 3) msgHtml += `<div class="fc-msg" style="color:var(--text-muted)">+${msgs.length - 3} more</div>`;
+    msgHtml += '</div>';
+  }
+  const proj = f.project || inferProject(f.file) || null;
+  return `<div class="finding-card" data-finding-id="${escAttr(f.id)}">
+    <span class="fc-type ${escAttr(f.type)}">${escHtml(f.type)}</span>
+    ${proj ? `<span class="fc-project">${escHtml(proj)}</span>` : ''}
+    <div class="fc-body">
+      <div class="fc-title">${escHtml(f.title)}</div>
+      ${f.detail ? `<div class="fc-detail">${escHtml(f.detail)}</div>` : ''}
+      ${f.file ? `<div class="fc-file">${escHtml(shortPath(f.file))}</div>` : ''}
+      ${f.goalId ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">→ ${escHtml(f.goalId)}</div>` : ''}
+      ${msgHtml}
+    </div>
+    <div class="fc-meta">
+      <span class="fc-id" title="Finding ID">${escHtml(f.id)}</span>
+      <span class="fc-status ${escAttr(f.status || 'identified')}">${escHtml(f.status || 'identified')}</span>
+      ${age ? `<div style="margin-top:2px">${age}</div>` : ''}
+      <div style="margin-top:4px;display:flex;gap:3px;align-items:center">
+        <button onclick="rateFinding('${escAttr(f.id)}','good')" style="font-size:11px;padding:1px 5px;background:${f.rating==='good'?'var(--green-bg)':'none'};border:1px solid ${f.rating==='good'?'var(--green)':'var(--border)'};color:${f.rating==='good'?'var(--green)':'var(--text-muted)'};border-radius:3px;cursor:pointer" title="Good insight">+</button>
+        <button onclick="rateFinding('${escAttr(f.id)}','bad')" style="font-size:11px;padding:1px 5px;background:${f.rating==='bad'?'var(--red-bg)':'none'};border:1px solid ${f.rating==='bad'?'var(--red)':'var(--border)'};color:${f.rating==='bad'?'var(--red)':'var(--text-muted)'};border-radius:3px;cursor:pointer" title="Bad insight">-</button>
+        <button onclick="dismissFinding('${escAttr(f.id)}')" style="font-size:11px;padding:1px 5px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer" title="Dismiss">✕</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Render findings tracker — status-first layout with active on top, resolved collapsed
+function toggleGoals() {
+  const content = document.getElementById('goalsContent');
+  const btn = document.getElementById('goalsToggle');
+  content.classList.toggle('collapsed');
+  btn.textContent = content.classList.contains('collapsed') ? '▸' : '▾';
+}
+
+function renderGoals(goalsData) {
+  if (!goalsData) return;
+  const treeEl = document.getElementById('goalsTree');
+  if (!treeEl) return;
+
+  let html = '';
+  const projects = goalsData.projects || {};
+  for (const [name, project] of Object.entries(projects)) {
+    const goals = (project.goals || []).filter(g => g.status !== 'completed');
+
+    html += `<div class="goal-project">`;
+    html += `<div class="goal-project-name">${escHtml(name)}</div>`;
+
+    for (const goal of goals.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
+      const insightCount = (goal.insights || []).length;
+      const sourceClass = goal.source === 'brain' ? 'brain' : goal.source === 'user' ? '' : '';
+      html += `<div class="goal-item">`;
+      html += `<span class="goal-bullet ${sourceClass}">●</span>`;
+      html += `<span class="goal-title" ondblclick="editGoal('${escAttr(goal.id)}', this)">${escHtml(goal.title)}</span>`;
+      if (insightCount > 0) {
+        html += `<span class="goal-insights-count">${insightCount}</span>`;
+      }
+      html += `<span class="goal-meta">${goal.source}</span>`;
+      html += `<span class="goal-actions">`;
+      html += `<button onclick="editGoal('${escAttr(goal.id)}', this.closest('.goal-item').querySelector('.goal-title'))" title="Edit">✎</button>`;
+      html += `<button onclick="removeGoal('${escAttr(goal.id)}')" title="Remove">✕</button>`;
+      html += `</span>`;
+      html += `</div>`;
+    }
+
+    // Add goal input row
+    html += `<div class="goal-add-row">`;
+    html += `<input type="text" placeholder="Add goal..." onkeydown="if(event.key==='Enter')addGoal('${escAttr(name)}',this)">`;
+    html += `<button onclick="addGoal('${escAttr(name)}',this.previousElementSibling)">+</button>`;
+    html += `</div>`;
+    html += `</div>`;
+  }
+
+  // Add project row
+  html += `<div class="goals-add-project">`;
+  html += `<input type="text" placeholder="Add project..." onkeydown="if(event.key==='Enter')addProject(this)">`;
+  html += `<button onclick="addProject(this.previousElementSibling)">+ Project</button>`;
+  html += `</div>`;
+
+  if (Object.keys(projects).length === 0) {
+    html = '<div style="font-size:11px;color:var(--text-dim);padding:4px 0">No goals yet</div>' + html;
+  }
+  treeEl.innerHTML = html;
+}
+
+function addGoal(project, inputEl) {
+  const title = inputEl.value.trim();
+  if (!title) return;
+  inputEl.value = '';
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'add', project, title })
+  });
+}
+
+function removeGoal(goalId) {
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'remove', goalId })
+  });
+}
+
+function editGoal(goalId, el) {
+  if (el.contentEditable === 'true') return; // already editing
+  const original = el.textContent;
+  el.contentEditable = 'true';
+  el.focus();
+  // select all text
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  window.getSelection().removeAllRanges();
+  window.getSelection().addRange(range);
+
+  function save() {
+    el.contentEditable = 'false';
+    const newTitle = el.textContent.trim();
+    if (newTitle && newTitle !== original) {
+      fetch('/api/goals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update', goalId, title: newTitle })
+      });
+    } else {
+      el.textContent = original;
+    }
+    el.removeEventListener('blur', save);
+    el.removeEventListener('keydown', onKey);
+  }
+  function onKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+    if (e.key === 'Escape') { el.textContent = original; el.blur(); }
+  }
+  el.addEventListener('blur', save);
+  el.addEventListener('keydown', onKey);
+}
+
+function addProject(inputEl) {
+  const name = inputEl.value.trim();
+  if (!name) return;
+  inputEl.value = '';
+  // Add project with a placeholder goal prompt
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'add', project: name, title: 'New goal' })
+  });
+}
+
+function renderTracker(findingsList, files) {
+  const el = document.getElementById("tracker");
+  const badge = document.getElementById("findingsBadge");
+
+  const activeStatuses = ['identified', 'sent', 'received'];
+  const resolvedStatuses = ['implemented', 'ignored', 'failed'];
+  const active = findingsList.filter(f => activeStatuses.includes(f.status));
+  const resolved = findingsList.filter(f => resolvedStatuses.includes(f.status));
+
+  // Badge shows active count (the ones that matter)
+  badge.textContent = active.length || findingsList.length;
+
+  if (!findingsList.length && !files.length) {
+    el.innerHTML = '<div class="tracker-empty">No findings yet. Start the autopilot to begin tracking.</div>';
+    return;
+  }
+
+  let html = '';
+
+  // --- ACTIVE FINDINGS (always visible, grouped by project) ---
+  if (active.length) {
+    html += '<div class="tracker-group">';
+    html += `<div class="tracker-group-header">Active <span class="count">${active.length}</span> <button onclick="dismissAllFindings()" style="margin-left:auto;font-size:9px;padding:2px 8px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px">Dismiss All</button></div>`;
+
+    const byProject = {};
+    for (const f of active) {
+      const proj = f.project || inferProject(f.file) || 'general';
+      if (!byProject[proj]) byProject[proj] = [];
+      byProject[proj].push(f);
+    }
+
+    const statusOrder = { sent: 0, received: 1, identified: 2 };
+    for (const proj of Object.keys(byProject).sort()) {
+      const projFindings = byProject[proj];
+      html += `<div class="tracker-section"><h3>${escHtml(proj)} <span class="count">${projFindings.length}</span></h3>`;
+
+      // Parent/child hierarchy
+      const parentIds = new Set(projFindings.filter(f => f.parentId).map(f => f.parentId));
+      const parents = projFindings.filter(f => parentIds.has(f.id));
+      const children = projFindings.filter(f => f.parentId);
+      const standalone = projFindings.filter(f => !f.parentId && !parentIds.has(f.id));
+      const ordered = [...parents, ...standalone].sort((a, b) => (statusOrder[a.status] ?? 2) - (statusOrder[b.status] ?? 2));
+
+      for (const f of ordered) {
+        html += renderFindingCard(f);
+        const kids = children.filter(c => c.parentId === f.id);
+        if (kids.length) {
+          html += '<div style="margin-left:16px;border-left:2px solid var(--border);padding-left:8px">';
+          for (const kid of kids) html += renderFindingCard(kid);
+          html += '</div>';
+        }
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  } else {
+    html += '<div class="tracker-group"><div class="tracker-group-header" style="color:var(--green)">No active findings</div></div>';
+  }
+
+  // --- FILES INVESTIGATED (compact) ---
+  if (files.length) {
+    html += '<div class="tracker-group">';
+    html += `<div class="tracker-group-header clickable" onclick="this.nextElementSibling.classList.toggle('collapsed')">Files Investigated <span class="count">${files.length}</span> <span class="toggle-arrow">▾</span></div>`;
+    html += '<div class="file-list">';
+    for (const f of files.slice(0, 30)) {
+      html += `<span class="file-tag" title="${escAttr(f)}">${escHtml(shortPath(f))}</span>`;
+    }
+    if (files.length > 30) html += `<span class="file-tag">+${files.length - 30} more</span>`;
+    html += '</div></div>';
+  }
+
+  // --- RESOLVED FINDINGS (collapsed by default) ---
+  if (resolved.length) {
+    const implCount = resolved.filter(f => f.status === 'implemented').length;
+    const ignCount = resolved.filter(f => f.status === 'ignored').length;
+    const failCount = resolved.filter(f => f.status === 'failed').length;
+    const parts = [];
+    if (implCount) parts.push(`${implCount} implemented`);
+    if (ignCount) parts.push(`${ignCount} ignored`);
+    if (failCount) parts.push(`${failCount} failed`);
+
+    html += '<div class="tracker-group">';
+    html += `<div class="tracker-group-header clickable" onclick="this.nextElementSibling.classList.toggle('collapsed')">Resolved <span class="count">${parts.join(', ')}</span> <span class="toggle-arrow">▸</span></div>`;
+    html += '<div class="collapsed">';
+
+    // Group resolved by project too
+    const byProject = {};
+    for (const f of resolved) {
+      const proj = f.project || inferProject(f.file) || 'general';
+      if (!byProject[proj]) byProject[proj] = [];
+      byProject[proj].push(f);
+    }
+
+    for (const proj of Object.keys(byProject).sort()) {
+      const projFindings = byProject[proj];
+      html += `<div class="tracker-section"><h3>${escHtml(proj)} <span class="count">${projFindings.length}</span></h3>`;
+      // Just show compact one-liners for resolved
+      for (const f of projFindings) {
+        html += `<div class="finding-resolved" data-finding-id="${escAttr(f.id)}">
+          <span class="fc-status ${escAttr(f.status)}">${escHtml(f.status)}</span>
+          <span class="fc-title-inline">${escHtml(f.title)}</span>
+        </div>`;
+      }
+      html += '</div>';
+    }
+    html += '</div></div>';
+  }
+
+  el.innerHTML = html;
+}
+
+function inferProject(filePath) {
+  if (!filePath) return null;
+  // Extract project name from common project directory patterns
+  const patterns = [
+    /\/(?:Documents\/Code|projects|repos|workspace|src|Sites)\/([^/]+)/,
+    /\/home\/\w+\/([^/]+)/,
+    /\/opt\/([^/]+)/,
+  ];
+  for (const re of patterns) {
+    const m = filePath.match(re);
+    if (m) return m[1];
+  }
+  // Relative paths like "my-project/server.js"
+  const m3 = filePath.match(/^([^/]+)\//);
+  if (m3) return m3[1];
+  return null;
+}
+
+function shortPath(filePath) {
+  if (!filePath) return '';
+  // Show last 2 segments
+  return filePath.split('/').slice(-2).join('/');
+}
+
+function timeSince(iso) {
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + 'm ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+
+connect();
+document.getElementById("chatInput").focus();
+
+setInterval(() => {
+  if (currentState.uptime !== undefined) {
+    currentState.uptime += 10000;
+    document.getElementById("uptimeVal").textContent = fmtUptime(currentState.uptime);
+  }
+}, 10000);
+
+// ─── CLI Pilot Tab ──────────────────────────────────────────────────
+const CLI_PRESETS = {
+  polish: "Look at what you built with fresh eyes. Fix the weakest parts. Make it feel polished and production-quality.",
+  visual: "Focus on visual design. Improve typography, spacing, colors, shadows, transitions. Every detail should feel intentional.",
+  bugs: "Test every interaction. Click every button, try every feature. Fix any bugs or broken states you find.",
+  review: "Do a final polish pass. What is missing? What would make this feel like a real product? Do that.",
+  continue: "continue"
+};
+
+function renderCli(s) {
+  if (!s || !s.cli) return;
+  const cli = s.cli;
+  // Status dot
+  const dot = document.getElementById("cliDot");
+  dot.className = "cli-status-dot " + cli.status;
+  // Session name
+  document.getElementById("cliSession").textContent = "tmux: " + cli.session;
+  // Status badge
+  const badge = document.getElementById("cliBadge");
+  badge.textContent = cli.status;
+  badge.className = "cli-status-badge " + cli.status;
+  // Auto toggle
+  document.getElementById("cliAutoToggle").className = "cli-toggle" + (cli.autoMode ? " active" : "");
+  // Queue
+  const qEl = document.getElementById("cliQueue");
+  if (cli.queue.length === 0) {
+    qEl.innerHTML = '<div class="cli-empty">Queue empty</div>';
+  } else {
+    qEl.innerHTML = cli.queue.map(item => `
+      <div class="cli-queue-item">
+        <div>${escHtml(item.text)}</div>
+        <div class="cli-item-actions">
+          <button onclick="cliEditItem(${item.id})">edit</button>
+          <button onclick="cliSendItem(${item.id})">send</button>
+          <button class="remove" onclick="cliRemoveItem(${item.id})">remove</button>
+        </div>
+      </div>`).join("");
+  }
+  // History
+  document.getElementById("cliHistoryCount").textContent = cli.history.length;
+  const hEl = document.getElementById("cliHistory");
+  hEl.innerHTML = cli.history.slice().reverse().slice(0, 20).map(h => `
+    <div class="cli-history-item">
+      <span class="time">${h.time}</span>
+      <span class="badge ${h.type}">${h.type}</span>
+      ${escHtml(h.text).substring(0, 50)}${h.text.length > 50 ? '...' : ''}
+    </div>`).join("");
+}
+
+function renderCliTerminal(content) {
+  const el = document.getElementById("cliTerminalContent");
+  const html = escHtml(content).replace(/^(❯.*)/gm, '<span class="prompt">$1</span>');
+  el.innerHTML = html;
+  const container = document.getElementById("cliTerminal");
+  container.scrollTop = container.scrollHeight;
+}
+
+function cliSend(action) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(action)); }
+function cliAddToQueue() {
+  const input = document.getElementById("cliInput");
+  const text = input.value.trim();
+  if (!text) return;
+  cliSend({ action: "cli_add", text });
+  input.value = "";
+}
+function cliSendNow() {
+  const input = document.getElementById("cliInput");
+  const text = input.value.trim();
+  if (!text) return;
+  cliSend({ action: "cli_send_now", text });
+  input.value = "";
+}
+function cliPreset(key) { cliSend({ action: "cli_add", text: CLI_PRESETS[key] }); }
+function cliRemoveItem(id) { cliSend({ action: "cli_remove", id }); }
+function cliSendItem(id) { cliSend({ action: "cli_send_queued", id }); }
+function cliEditItem(id) {
+  const item = currentState.cli && currentState.cli.queue.find(q => q.id === id);
+  if (!item) return;
+  const newText = prompt("Edit message:", item.text);
+  if (newText !== null && newText.trim()) cliSend({ action: "cli_edit", id, text: newText.trim() });
+}
+function cliToggleAuto() { cliSend({ action: "cli_toggle_auto" }); }
+function cliHandleKey(e) {
+  if (e.key === "Enter" && e.metaKey) { e.preventDefault(); cliSendNow(); }
+  else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); cliAddToQueue(); }
+}
+</script>
+</body>
+</html>
