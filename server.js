@@ -2650,18 +2650,64 @@ function startServer() {
       console.log(`  Working dir: ${USER_CWD}`);
       console.log(`  Projects base: ${PROJECTS_BASE}`);
       console.log(`  Memory dir: ${MEMORY_DIR || "(none found)"}`);
-      addChat("system", "Autopilot online — checking Claude Code auth...");
+      // ── Preflight checks ──────────────────────────────────────
+      addChat("system", "Running preflight checks...");
       broadcastState();
+      const preflight = { auth: false, screenRecording: false, accessibility: false };
+      let fatal = false;
 
+      // 1. Claude Code auth
+      addChat("system", "Checking Claude Code auth...");
+      broadcastState();
       if (!checkClaudeAuth()) {
         console.error("Claude Code is not logged in. Run: claude /login");
-        addChat("system", "⚠ Claude Code is not logged in. The brain cannot start without authentication.");
-        addChat("system", "Run `claude /login` in a terminal, then restart Autopilot.");
-        broadcastState();
-        return; // Don't start brain cycles — server stays up for the dashboard
+        addChat("system", "✗ Claude Code — not logged in. Run `claude /login` in a terminal, then restart.");
+        fatal = true;
+      } else {
+        addChat("system", "✓ Claude Code — authenticated.");
+        preflight.auth = true;
       }
-      addChat("system", "Auth OK.");
 
+      // 2. Screen Recording permission (screencapture)
+      try {
+        const testImg = path.join(require("os").tmpdir(), "autopilot-preflight-test.png");
+        execSync(`screencapture -x -t png "${testImg}"`, { timeout: 5000 });
+        if (fs.existsSync(testImg)) {
+          const stat = fs.statSync(testImg);
+          fs.unlinkSync(testImg);
+          if (stat.size > 100) {
+            addChat("system", "✓ Screen Recording — granted.");
+            preflight.screenRecording = true;
+          } else {
+            addChat("system", "✗ Screen Recording — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Screen Recording, then restart.");
+          }
+        }
+      } catch {
+        addChat("system", "✗ Screen Recording — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Screen Recording, then restart.");
+      }
+
+      // 3. Accessibility permission (AppleScript keystroke typing)
+      try {
+        execSync(`osascript -e 'tell application "System Events" to return name of first process'`, { timeout: 5000 });
+        addChat("system", "✓ Accessibility — granted.");
+        preflight.accessibility = true;
+      } catch {
+        addChat("system", "✗ Accessibility — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Accessibility, then restart.");
+      }
+
+      broadcastState();
+
+      if (fatal) {
+        addChat("system", "Preflight failed — fix the issues above and restart Autopilot.");
+        broadcastState();
+        return;
+      }
+
+      if (!preflight.screenRecording || !preflight.accessibility) {
+        addChat("system", "Some permissions missing — Autopilot will start but with reduced functionality.");
+      }
+
+      // ── Normal startup ─────────────────────────────────────────
       addChat("system", "Scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
