@@ -765,14 +765,9 @@ function collectUserMessages(targetCount = 1000) {
   return [...new Set(messages)].slice(0, targetCount);
 }
 
-// Step 2: Analyze messages with Claude API to extract voice patterns
-// Requires ANTHROPIC_API_KEY in env. Falls back to default profile if missing.
+// Step 2: Analyze messages using Agent SDK (same auth as brain — no API key needed)
 async function analyzeVoicePatterns(messages) {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error("ANTHROPIC_API_KEY not set — using default voice profile. Set it to enable auto-analysis.");
-  }
-  const Anthropic = require("@anthropic-ai/sdk");
-  const client = new Anthropic();
+  const { query } = require("@anthropic-ai/claude-agent-sdk");
 
   // Sample strategically: take messages spread across the collection
   const sample = [];
@@ -789,12 +784,7 @@ async function analyzeVoicePatterns(messages) {
 
   const messagesText = sample.map((m, i) => `${i + 1}. "${m}"`).join("\n");
 
-  const response = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 4000,
-    messages: [{
-      role: "user",
-      content: `You are analyzing a user's messages to Claude to build a voice profile. Here are ${sample.length} messages from their Claude Code sessions (out of ${messages.length} total collected):
+  const prompt = `You are analyzing a user's messages to Claude to build a voice profile. Here are ${sample.length} messages from their Claude Code sessions (out of ${messages.length} total collected):
 
 ${messagesText}
 
@@ -828,11 +818,27 @@ Write a comprehensive voice & communication profile covering:
 ## 10 Sample Messages In Their Voice
 Pick 10 representative messages that capture their style well. Include a mix of instructions, corrections, approvals, and complex requests.
 
-Be specific and data-driven — reference actual patterns from the messages. This profile will be used to match their communication style in future interactions.`
-    }]
-  });
+Be specific and data-driven — reference actual patterns from the messages. This profile will be used to match their communication style in future interactions.`;
 
-  return response.content[0].text;
+  let resultText = "";
+  for await (const message of query({
+    prompt,
+    options: {
+      systemPrompt: "You are a communication analyst. Analyze the messages and produce a detailed voice profile. Output ONLY the profile markdown — no preamble, no explanation.",
+      allowedTools: [],
+      model: "claude-sonnet-4-6",
+      permissionMode: "bypassPermissions",
+      pathToClaudeCodeExecutable: CLAUDE_PATH,
+      cwd: APP_DIR,
+    },
+  })) {
+    if (message.type === "result" && message.result) {
+      resultText = message.result;
+    }
+  }
+
+  if (!resultText) throw new Error("Voice analysis returned empty result");
+  return resultText;
 }
 
 // Step 3: Write voice profile document
@@ -2609,7 +2615,6 @@ function startServer() {
       console.log(`  Working dir: ${USER_CWD}`);
       console.log(`  Projects base: ${PROJECTS_BASE}`);
       console.log(`  Memory dir: ${MEMORY_DIR || "(none found)"}`);
-      console.log(`  API key: ${process.env.ANTHROPIC_API_KEY ? "set (voice analysis enabled)" : "not set (using default voice profile)"}`);
       addChat("system", "Autopilot online — scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
