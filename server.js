@@ -766,7 +766,11 @@ function collectUserMessages(targetCount = 1000) {
 }
 
 // Step 2: Analyze messages with Claude API to extract voice patterns
+// Requires ANTHROPIC_API_KEY in env. Falls back to default profile if missing.
 async function analyzeVoicePatterns(messages) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error("ANTHROPIC_API_KEY not set — using default voice profile. Set it to enable auto-analysis.");
+  }
   const Anthropic = require("@anthropic-ai/sdk");
   const client = new Anthropic();
 
@@ -894,9 +898,12 @@ async function generateVoiceProfile() {
     return true;
   } catch (e) {
     console.error("Voice profile generation failed:", e.message);
-    addChat("error", `Voice profile generation failed: ${e.message}`);
+    // Fall back to default profile on any failure (missing API key, network, etc.)
+    addChat("system", `Voice analysis unavailable (${e.message.split("—")[0].trim()}). Using default profile.`);
     broadcastState();
-    return false;
+    writeVoiceProfile(DEFAULT_VOICE_PROFILE, 0);
+    loadVoiceProfile();
+    return true;
   }
 }
 
@@ -2602,6 +2609,7 @@ function startServer() {
       console.log(`  Working dir: ${USER_CWD}`);
       console.log(`  Projects base: ${PROJECTS_BASE}`);
       console.log(`  Memory dir: ${MEMORY_DIR || "(none found)"}`);
+      console.log(`  API key: ${process.env.ANTHROPIC_API_KEY ? "set (voice analysis enabled)" : "not set (using default voice profile)"}`);
       addChat("system", "Autopilot online — scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
