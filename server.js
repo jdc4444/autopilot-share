@@ -51,6 +51,27 @@ function findSystemNode() {
 const CLAUDE_PATH = findClaude();
 const SYSTEM_NODE = findSystemNode();
 
+// Check if Claude Code is authenticated — returns true if logged in
+function checkClaudeAuth() {
+  try {
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
+    const result = execFileSync(CLAUDE_PATH, ["-p", "ping", "--max-turns", "1"], {
+      encoding: "utf8",
+      timeout: 15000,
+      env,
+    });
+    return true;
+  } catch (e) {
+    const msg = (e.stderr || e.message || "").toLowerCase();
+    if (msg.includes("not logged in") || msg.includes("login") || msg.includes("auth")) {
+      return false;
+    }
+    // Other errors (network, etc.) — assume logged in, will fail later with better context
+    return true;
+  }
+}
+
 // Auto-detect projects base and sessions directories
 const PROJECTS_BASE = path.join(HOME, ".claude/projects");
 
@@ -2629,7 +2650,19 @@ function startServer() {
       console.log(`  Working dir: ${USER_CWD}`);
       console.log(`  Projects base: ${PROJECTS_BASE}`);
       console.log(`  Memory dir: ${MEMORY_DIR || "(none found)"}`);
-      addChat("system", "Autopilot online — scanning threads...");
+      addChat("system", "Autopilot online — checking Claude Code auth...");
+      broadcastState();
+
+      if (!checkClaudeAuth()) {
+        console.error("Claude Code is not logged in. Run: claude /login");
+        addChat("system", "⚠ Claude Code is not logged in. The brain cannot start without authentication.");
+        addChat("system", "Run `claude /login` in a terminal, then restart Autopilot.");
+        broadcastState();
+        return; // Don't start brain cycles — server stays up for the dashboard
+      }
+      addChat("system", "Auth OK.");
+
+      addChat("system", "Scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
       addChat("system", `Scanned ${sessionCount} recent sessions.`);
