@@ -225,6 +225,9 @@ function loadMemories() {
 }
 loadMemories();
 
+// Voice profile is loaded later after knowledge system is initialized
+// (see loadVoiceProfile() and generateVoiceProfile() below)
+
 // ============================================================
 // KNOWLEDGE SYSTEM — thread scanner, autopilot memory, goals, prompts
 // ============================================================
@@ -234,6 +237,7 @@ const GOALS_FILE = path.join(AUTOPILOT_DIR, "goals.json");
 const PROMPTS_FILE = path.join(AUTOPILOT_DIR, "good-prompts.json");
 const THREAD_DIGEST_FILE = path.join(AUTOPILOT_DIR, "thread-digest.json");
 const FINDINGS_FILE = path.join(AUTOPILOT_DIR, "findings.json");
+const VOICE_PROFILE_FILE = path.join(AUTOPILOT_DIR, "voice-profile.md");
 
 // Initialize files if missing
 function initKnowledgeFiles() {
@@ -653,6 +657,206 @@ function scanRecentThreads() {
   } catch (e) {
     console.error("Thread scan error:", e.message);
     return { sessions: {}, lastScan: null };
+  }
+}
+
+// ============================================================
+// VOICE PROFILE GENERATION — 3-step: collect messages → analyze → write doc
+// ============================================================
+
+// Step 1: Pull ~1000 user messages from ALL JSONL session logs
+function collectUserMessages(targetCount = 1000) {
+  const messages = [];
+  if (!fs.existsSync(PROJECTS_BASE)) return messages;
+
+  try {
+    const projectDirs = fs.readdirSync(PROJECTS_BASE)
+      .filter(d => { try { return fs.statSync(path.join(PROJECTS_BASE, d)).isDirectory(); } catch { return false; } });
+
+    let allFiles = [];
+    for (const dir of projectDirs) {
+      const dirPath = path.join(PROJECTS_BASE, dir);
+      try {
+        const files = fs.readdirSync(dirPath)
+          .filter(f => f.endsWith(".jsonl"))
+          .map(f => ({ path: path.join(dirPath, f), mtime: fs.statSync(path.join(dirPath, f)).mtimeMs }));
+        allFiles.push(...files);
+      } catch {}
+    }
+
+    // Sort by recency, process newest first
+    allFiles.sort((a, b) => b.mtime - a.mtime);
+
+    for (const file of allFiles) {
+      if (messages.length >= targetCount) break;
+      try {
+        const fileSize = fs.statSync(file.path).size;
+        let content;
+        if (fileSize > 10 * 1024 * 1024) {
+          // Large file — sample head + tail
+          try {
+            content = execFileSync("head", ["-c", "2000000", file.path], { encoding: "utf8", timeout: 5000 });
+            content += "\n" + execFileSync("tail", ["-c", "2000000", file.path], { encoding: "utf8", timeout: 5000 });
+          } catch { continue; }
+        } else {
+          content = fs.readFileSync(file.path, "utf8");
+        }
+
+        for (const line of content.split("\n")) {
+          if (messages.length >= targetCount) break;
+          if (!line.trim()) continue;
+          try {
+            const d = JSON.parse(line);
+            if (d.type === "queue-operation" && d.operation === "enqueue" && d.content) {
+              const text = d.content.trim();
+              // Filter out system messages, very short/long messages, and duplicates
+              if (text && !text.startsWith("<task-notification") && !text.startsWith("<") &&
+                  text.length > 5 && text.length < 2000) {
+                messages.push(text);
+              }
+            }
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.error("collectUserMessages error:", e.message);
+  }
+
+  // Deduplicate
+  return [...new Set(messages)].slice(0, targetCount);
+}
+
+// Step 2: Analyze messages with Claude API to extract voice patterns
+async function analyzeVoicePatterns(messages) {
+  const Anthropic = require("@anthropic-ai/sdk");
+  const client = new Anthropic();
+
+  // Sample strategically: take messages spread across the collection
+  const sample = [];
+  const step = Math.max(1, Math.floor(messages.length / 200));
+  for (let i = 0; i < messages.length && sample.length < 200; i += step) {
+    sample.push(messages[i]);
+  }
+  // Also add some random ones for variety
+  const shuffled = [...messages].sort(() => Math.random() - 0.5);
+  for (const m of shuffled) {
+    if (sample.length >= 300) break;
+    if (!sample.includes(m)) sample.push(m);
+  }
+
+  const messagesText = sample.map((m, i) => `${i + 1}. "${m}"`).join("\n");
+
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-20250514",
+    max_tokens: 4000,
+    messages: [{
+      role: "user",
+      content: `You are analyzing a user's messages to Claude to build a voice profile. Here are ${sample.length} messages from their Claude Code sessions (out of ${messages.length} total collected):
+
+${messagesText}
+
+Write a comprehensive voice & communication profile covering:
+
+## Voice & Style
+- Message length patterns, punctuation habits, capitalization
+- Common shorthand, abbreviations, or slang
+- How they give instructions vs ask questions
+- Typical sentence structure
+
+## Thinking & Problem-Solving
+- How they approach problems (vision-first? detail-first? iterative?)
+- How they handle errors or unexpected results
+- What they challenge or verify
+
+## Frustration & Satisfaction Signals
+- How they express mild → strong frustration (with examples from the messages)
+- How they express approval/satisfaction (with examples)
+- What triggers frustration
+
+## Work Patterns
+- How they delegate work
+- What they expect in terms of autonomy
+- Common workflows visible in their messages
+
+## Design & Quality Preferences
+- Any aesthetic preferences mentioned
+- Quality standards they enforce
+
+## 10 Sample Messages In Their Voice
+Pick 10 representative messages that capture their style well. Include a mix of instructions, corrections, approvals, and complex requests.
+
+Be specific and data-driven — reference actual patterns from the messages. This profile will be used to match their communication style in future interactions.`
+    }]
+  });
+
+  return response.content[0].text;
+}
+
+// Step 3: Write voice profile document
+function writeVoiceProfile(analysis, messageCount) {
+  const content = `---
+name: voice-profile
+description: Auto-generated voice profile from ${messageCount} user messages — used to match communication style
+type: auto-generated
+generated: ${new Date().toISOString()}
+---
+
+${analysis}
+`;
+  atomicWriteSync(VOICE_PROFILE_FILE, content);
+  console.log(`Voice profile written (${messageCount} messages analyzed)`);
+}
+
+// Load voice profile into system prompt if it exists
+function loadVoiceProfile() {
+  try {
+    if (fs.existsSync(VOICE_PROFILE_FILE)) {
+      const raw = fs.readFileSync(VOICE_PROFILE_FILE, "utf8");
+      const body = raw.replace(/^---[\s\S]*?---\s*/, "").trim();
+      if (body) {
+        SYSTEM_PROMPT += `\n\n## USER VOICE PROFILE — match this communication style\n${body}`;
+        fs.writeFileSync(SYSTEM_PROMPT_FILE, SYSTEM_PROMPT);
+        console.log("Voice profile loaded into system prompt");
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+// Full pipeline: collect → analyze → write → load
+async function generateVoiceProfile() {
+  try {
+    addChat("system", "Generating voice profile — Step 1: collecting user messages...");
+    broadcastState();
+    const messages = collectUserMessages(1000);
+    if (messages.length < 20) {
+      addChat("system", `Only found ${messages.length} messages — need at least 20 for voice profile. Skipping.`);
+      broadcastState();
+      return false;
+    }
+    addChat("system", `Step 1 complete: collected ${messages.length} unique messages`);
+    broadcastState();
+
+    addChat("system", "Step 2: analyzing voice patterns with Claude...");
+    broadcastState();
+    const analysis = await analyzeVoicePatterns(messages);
+    addChat("system", "Step 2 complete: voice analysis done");
+    broadcastState();
+
+    addChat("system", "Step 3: writing voice profile...");
+    broadcastState();
+    writeVoiceProfile(analysis, messages.length);
+    loadVoiceProfile();
+    addChat("system", `Voice profile generated from ${messages.length} messages and loaded`);
+    broadcastState();
+    return true;
+  } catch (e) {
+    console.error("Voice profile generation failed:", e.message);
+    addChat("error", `Voice profile generation failed: ${e.message}`);
+    broadcastState();
+    return false;
   }
 }
 
@@ -2323,6 +2527,8 @@ wss.on("connection", (ws) => {
         const digest = scanRecentThreads();
         ws.send(JSON.stringify({ type: "threadScan", digest }));
         addChat("system", `Thread scan: ${Object.keys(digest.sessions).length} sessions indexed.`);
+      } else if (msg.action === "regenerateVoice") {
+        generateVoiceProfile();
       } else if (msg.action && msg.action.startsWith("cli_")) {
         cliHandleAction(msg);
       }
@@ -2359,7 +2565,19 @@ function startServer() {
       addChat("system", "Autopilot online — scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
-      addChat("system", `Scanned ${sessionCount} recent sessions. Auto-starting...`);
+      addChat("system", `Scanned ${sessionCount} recent sessions.`);
+
+      // Load existing voice profile or generate one from thread history
+      if (!loadVoiceProfile()) {
+        addChat("system", "No voice profile found — generating from your message history...");
+        generateVoiceProfile().then(() => {
+          addChat("system", "Auto-starting...");
+          broadcastState();
+        }).catch(() => {});
+      } else {
+        addChat("system", "Voice profile loaded. Auto-starting...");
+      }
+
       takeScreenshot().then(() => broadcastState()).catch(() => {});
       start();
     });
