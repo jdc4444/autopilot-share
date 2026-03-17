@@ -821,6 +821,11 @@ Pick 10 representative messages that capture their style well. Include a mix of 
 Be specific and data-driven — reference actual patterns from the messages. This profile will be used to match their communication style in future interactions.`;
 
   let resultText = "";
+  // Strip CLAUDECODE env var so the Agent SDK subprocess doesn't think
+  // it's inside a nested Claude Code session and refuse to start.
+  const savedClaudeCode = process.env.CLAUDECODE;
+  delete process.env.CLAUDECODE;
+  try {
   for await (const message of query({
     prompt,
     options: {
@@ -835,6 +840,9 @@ Be specific and data-driven — reference actual patterns from the messages. Thi
     if (message.type === "result" && message.result) {
       resultText = message.result;
     }
+  }
+  } finally {
+    if (savedClaudeCode !== undefined) process.env.CLAUDECODE = savedClaudeCode;
   }
 
   if (!resultText) throw new Error("Voice analysis returned empty result");
@@ -1772,10 +1780,16 @@ async function callBrain(prompt, sessionType = "cycle") {
     const isElectron = !!process.versions.electron;
     const execPath = (isElectron && fs.existsSync(SYSTEM_NODE)) ? SYSTEM_NODE : process.execPath;
 
+    // Strip CLAUDECODE env var so the Agent SDK subprocess doesn't think
+    // it's inside a nested Claude Code session and refuse to start.
+    const workerEnv = { ...process.env };
+    delete workerEnv.CLAUDECODE;
+
     const worker = fork(BRAIN_WORKER_PATH, [], {
       execPath,
       cwd: APP_DIR,
       silent: true,
+      env: workerEnv,
     });
 
     if (sessionType === "cycle") activeCycleWorker = worker;
