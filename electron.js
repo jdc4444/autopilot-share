@@ -75,8 +75,8 @@ function createWindow() {
 app.on("ready", () => {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
-  // Load server from the app's own directory
-  require(path.join(__dirname, "server.js"));
+  // Load server from this directory
+  require(require("path").join(__dirname, "server.js"));
 
   // Wait for server to bind, then open window
   setTimeout(() => {

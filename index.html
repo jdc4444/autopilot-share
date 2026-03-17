@@ -938,37 +938,6 @@
   .tab-content.active { display: flex; }
 
   /* Findings tracker */
-  .goals-panel {
-    border-bottom: 1px solid var(--border);
-    padding: 12px 20px;
-  }
-  .goals-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    cursor: pointer;
-  }
-  .goals-title {
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-  .goals-toggle {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 14px;
-    cursor: pointer;
-    padding: 2px 6px;
-  }
-  .goals-content {
-    margin-top: 8px;
-  }
-  .goals-content.collapsed {
-    display: none;
-  }
   .mission-line {
     font-size: 13px;
     color: var(--text-secondary);
@@ -1154,6 +1123,10 @@
     align-items: flex-start;
     gap: 10px;
   }
+  .finding-card.next-send {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
   .finding-card .fc-type {
     font-size: 9px;
     font-weight: 700;
@@ -1170,6 +1143,19 @@
   .fc-type.improvement { background: var(--blue-bg); color: var(--blue); }
   .fc-type.debt { background: #1a1520; color: var(--purple); }
   .fc-type.question { background: #1a1a10; color: var(--accent); }
+  .fc-scale {
+    font-size: 9px;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 1px;
+    background: var(--bg-raised);
+    color: var(--text-muted);
+  }
+  .fc-scale.scale-1, .fc-scale.scale-2 { background: var(--green-bg); color: var(--green); }
+  .fc-scale.scale-4, .fc-scale.scale-5 { background: var(--red-bg); color: var(--red); }
   .finding-card .fc-project {
     font-size: 8px;
     font-weight: 600;
@@ -1257,8 +1243,10 @@
   .fc-status.implemented { background: var(--green-bg); color: var(--green); }
   .fc-status.ignored { background: var(--bg-raised); color: var(--text-muted); }
   .fc-status.failed { background: var(--red-bg); color: var(--red); }
+  .fc-status.parked { background: var(--bg-raised); color: var(--purple); }
   .fc-status.queued { background: #fff8ef; color: var(--orange); }
-  .fc-status.sending { background: var(--green-bg); color: var(--green); }
+  .fc-status.sending { background: var(--green-bg); color: var(--green); animation: preview-pulse 0.5s ease-in-out infinite; }
+  .fc-status.typing { background: var(--red-bg); color: var(--red); animation: preview-pulse 0.5s ease-in-out infinite; }
   .fc-status.preview { background: #fff8ef; color: var(--orange); animation: preview-pulse 1s ease-in-out infinite; }
   @keyframes preview-pulse { 0%,100% { opacity: 0.7; } 50% { opacity: 1; } }
   .fc-status.held { background: #f3f0f8; color: var(--purple); }
@@ -1448,7 +1436,7 @@
     <textarea class="sp-edit" id="spEdit" rows="2" oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,120)+'px';pauseAutoSend()" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendSuggested()}" style="display:none"></textarea>
     <div class="sp-actions">
       <button class="sp-send" onclick="sendSuggested()" title="Approve and send this suggestion">Send</button>
-      <button class="sp-cancel" onclick="rejectSuggested()" title="Reject this suggestion" style="border-color:var(--red);color:var(--red)">Reject</button>
+      <button class="sp-cancel" onclick="rejectSuggested()" title="Not now — return to queue" style="border-color:var(--orange);color:var(--orange)">Later</button>
       <button class="sp-cancel" onclick="toggleSpEdit()" id="spExpandBtn">Edit</button>
       <span class="sp-countdown" id="spCountdown"></span>
       <span class="sp-hint">auto-sends in countdown</span>
@@ -1478,15 +1466,6 @@
       </div>
       <div id="screenshotPlaceholder" style="text-align:center;padding:20px;color:var(--text-dim);font-size:11px;">No screenshot yet — waiting for first cycle</div>
       <img id="screenshotImg" style="display:none" alt="Latest screenshot" onclick="this.classList.toggle('expanded')">
-    </div>
-    <div class="goals-panel" id="goalsPanel">
-      <div class="goals-header" onclick="toggleGoals()">
-        <span class="goals-title">Mission & Goals</span>
-        <button class="goals-toggle" id="goalsToggle">▸</button>
-      </div>
-      <div class="goals-content collapsed" id="goalsContent">
-        <div class="goals-tree" id="goalsTree"></div>
-      </div>
     </div>
     <div class="tracker" id="tracker">
       <div class="tracker-empty">No insights yet. Start the autopilot to begin tracking.</div>
@@ -1648,8 +1627,8 @@ function connect() {
       suggestedHistory.unshift({ prompt: msg.prompt, title: title, time: new Date().toLocaleTimeString(), cycle: currentState.cycleCount || 0 });
       if (suggestedHistory.length > 10) suggestedHistory.pop();
       renderSuggestedHistory();
-      // Start auto-send countdown (8 seconds)
-      startAutoSend(8);
+      // Start auto-send countdown (25 seconds — insight review window)
+      startAutoSend(25);
     } else if (msg.type === "findingUpdate") {
       // Update existing finding card in-place
       const card = document.querySelector(`[data-finding-id="${msg.id}"]`);
@@ -1678,7 +1657,17 @@ function connect() {
         const badge = card.querySelector('.fc-status');
         if (badge && msg.remaining > 0) {
           badge.className = 'fc-status preview';
-          badge.textContent = `sending ${msg.remaining}s`;
+          badge.textContent = `review ${msg.remaining}s`;
+        }
+      }
+    } else if (msg.type === "keystrokeCountdown") {
+      // Keystroke delay — show red countdown with intercept option
+      const card = document.querySelector(`[data-finding-id="${msg.findingId}"]`);
+      if (card) {
+        const badge = card.querySelector('.fc-status');
+        if (badge && msg.remaining > 0) {
+          badge.className = 'fc-status sending';
+          badge.textContent = `typing ${msg.remaining}s`;
         }
       }
     } else if (msg.type === "cli_terminal") {
@@ -1764,8 +1753,7 @@ function updateUI(s) {
   if (s.memoryFiles !== undefined) document.getElementById("memoryCount").textContent = s.memoryFiles + " files";
   if (s.uptime !== undefined) document.getElementById("uptimeVal").textContent = fmtUptime(s.uptime);
   if (s.cycleHistory) renderCycleHistory(s.cycleHistory);
-  if (s.findings) renderTracker(s.findings, s.filesInvestigated || []);
-  if (s.goals) renderGoals(s.goals);
+  if (s.findings) renderTracker(s.findings, s.filesInvestigated || [], s.goals);
   // Update screenshot mode label
   if (s.screenshotMode) {
     const info = document.getElementById("screenshotInfo");
@@ -1964,7 +1952,7 @@ function appendMsg(entry) {
     div.className = "msg finding-msg";
     div.setAttribute("data-finding-id", f.id);
     const prompt = f.pendingPrompt || f.sentPrompt || null;
-    div.innerHTML = `<div class="finding-card">
+    div.innerHTML = `<div class="finding-card" style="position:relative">
       <span class="fc-type ${escAttr(f.type)}">${escHtml(f.type)}</span>
       <div class="fc-body">
         <div class="fc-title">${escHtml(f.title)}</div>
@@ -1972,6 +1960,7 @@ function appendMsg(entry) {
         ${f.file ? `<div class="fc-file">${escHtml(f.file)}</div>` : ''}
         ${prompt ? `<div class="fc-prompt">${escHtml(prompt)}</div>` : ''}
       </div>
+      <button onclick="dismissFinding('${escAttr(f.id)}')" style="position:absolute;top:8px;right:8px;font-size:13px;padding:2px 6px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:4px;cursor:pointer;line-height:1" title="Dismiss">✕</button>
       <div class="fc-meta">
         <span class="fc-id" title="Finding ID">${escHtml(f.id)}</span>
         <span class="fc-status ${escAttr(f.status || 'identified')}">${escHtml(f.status || 'identified')}</span>
@@ -2022,19 +2011,33 @@ function renderProjectChips(all, active) {
   const container = document.getElementById("projectChips");
   container.innerHTML = "";
   for (const p of all) {
-    const chip = document.createElement("button");
+    const chip = document.createElement("span");
     chip.className = "cp-chip" + (active.includes(p) ? " active" : "");
-    chip.textContent = p;
-    chip.onclick = () => toggleProject(p);
+    chip.style.cssText = "display:inline-flex;align-items:center;gap:2px";
+    const label = document.createElement("span");
+    label.textContent = p;
+    label.style.cursor = "pointer";
+    label.onclick = () => toggleProjectChip(p);
+    chip.appendChild(label);
+    const x = document.createElement("span");
+    x.textContent = "×";
+    x.style.cssText = "cursor:pointer;opacity:0.4;font-size:12px;margin-left:2px";
+    x.title = "Remove project";
+    x.onclick = (e) => { e.stopPropagation(); hideProject(p); };
+    chip.appendChild(x);
     container.appendChild(chip);
   }
 }
-function toggleProject(name) {
+function hideProject(name) {
+  if (ws) ws.send(JSON.stringify({ action: "hideProject", project: name }));
+}
+function toggleProjectChip(name) {
   const chips = document.querySelectorAll(".cp-chip");
   let active = [];
   chips.forEach(c => {
-    if (c.textContent === name) c.classList.toggle("active");
-    if (c.classList.contains("active")) active.push(c.textContent);
+    const chipName = c.querySelector('span') ? c.querySelector('span').textContent : c.textContent;
+    if (chipName === name) c.classList.toggle("active");
+    if (c.classList.contains("active")) active.push(chipName);
   });
   if (ws) ws.send(JSON.stringify({ action: "setProjects", projects: active }));
 }
@@ -2140,6 +2143,15 @@ function rateFinding(findingId, rating) {
 function dismissFinding(findingId) {
   if (ws) ws.send(JSON.stringify({ action: "dismissFinding", findingId }));
 }
+function parkFinding(findingId) {
+  if (ws) ws.send(JSON.stringify({ action: "parkFinding", findingId }));
+}
+function setScale(findingId, delta) {
+  const f = window._lastTrackerArgs && window._lastTrackerArgs[0].find(f => f.id === findingId);
+  const cur = (f && f.scale) || 3;
+  const next = Math.max(1, Math.min(5, cur + delta));
+  if (ws) ws.send(JSON.stringify({ action: "setScale", findingId, scale: next }));
+}
 function dismissAllFindings() {
   if (ws) ws.send(JSON.stringify({ action: "dismissAllFindings" }));
 }
@@ -2147,7 +2159,8 @@ function dismissAllFindings() {
 function rejectSuggested() {
   cancelAutoSend();
   if (currentSuggestedFindingId && ws) {
-    ws.send(JSON.stringify({ action: "updateFinding", findingId: currentSuggestedFindingId, status: "ignored" }));
+    // Return to queue as 'identified' — will come back around later
+    ws.send(JSON.stringify({ action: "updateFinding", findingId: currentSuggestedFindingId, status: "identified" }));
   }
   appendMsg({ role: "system", text: "Rejected suggestion", time: new Date().toLocaleTimeString() });
   document.getElementById("suggestedPanel").classList.remove("visible");
@@ -2254,7 +2267,7 @@ function refreshScreenshot() {
 // Auto-refresh screenshot on state updates
 let lastScreenshotRefresh = 0;
 
-function renderFindingCard(f) {
+function renderFindingCard(f, isNext) {
   const age = f.firstSeen ? timeSince(f.firstSeen) : '';
   const msgs = f.messages || [];
   let msgHtml = '';
@@ -2268,14 +2281,15 @@ function renderFindingCard(f) {
     msgHtml += '</div>';
   }
   const proj = f.project || inferProject(f.file) || null;
-  return `<div class="finding-card" data-finding-id="${escAttr(f.id)}">
+  return `<div class="finding-card${isNext ? ' next-send' : ''}" data-finding-id="${escAttr(f.id)}">
+    ${isNext ? '<span style="font-size:9px;font-weight:700;padding:1px 6px;background:var(--accent);color:#fff;border-radius:8px;letter-spacing:0.5px">NEXT</span>' : ''}
     <span class="fc-type ${escAttr(f.type)}">${escHtml(f.type)}</span>
+    ${f.scale ? `<span class="fc-scale scale-${f.scale}">${scaleLabels[f.scale] || f.scale}</span>` : ''}
     ${proj ? `<span class="fc-project">${escHtml(proj)}</span>` : ''}
     <div class="fc-body">
       <div class="fc-title">${escHtml(f.title)}</div>
       ${f.detail ? `<div class="fc-detail">${escHtml(f.detail)}</div>` : ''}
       ${f.file ? `<div class="fc-file">${escHtml(shortPath(f.file))}</div>` : ''}
-      ${f.goalId ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">→ ${escHtml(f.goalId)}</div>` : ''}
       ${msgHtml}
     </div>
     <div class="fc-meta">
@@ -2283,71 +2297,26 @@ function renderFindingCard(f) {
       <span class="fc-status ${escAttr(f.status || 'identified')}">${escHtml(f.status || 'identified')}</span>
       ${age ? `<div style="margin-top:2px">${age}</div>` : ''}
       <div style="margin-top:4px;display:flex;gap:3px;align-items:center">
-        <button onclick="rateFinding('${escAttr(f.id)}','good')" style="font-size:11px;padding:1px 5px;background:${f.rating==='good'?'var(--green-bg)':'none'};border:1px solid ${f.rating==='good'?'var(--green)':'var(--border)'};color:${f.rating==='good'?'var(--green)':'var(--text-muted)'};border-radius:3px;cursor:pointer" title="Good insight">+</button>
-        <button onclick="rateFinding('${escAttr(f.id)}','bad')" style="font-size:11px;padding:1px 5px;background:${f.rating==='bad'?'var(--red-bg)':'none'};border:1px solid ${f.rating==='bad'?'var(--red)':'var(--border)'};color:${f.rating==='bad'?'var(--red)':'var(--text-muted)'};border-radius:3px;cursor:pointer" title="Bad insight">-</button>
+        <button onclick="setScale('${escAttr(f.id)}',-1)" style="font-size:11px;padding:1px 5px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer" title="Priority up (smaller scale)">▲</button>
+        <button onclick="setScale('${escAttr(f.id)}',1)" style="font-size:11px;padding:1px 5px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer" title="Priority down (larger scale)">▼</button>
+        <button onclick="parkFinding('${escAttr(f.id)}')" style="font-size:11px;padding:1px 5px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer" title="Park (hide but keep)">⏸</button>
         <button onclick="dismissFinding('${escAttr(f.id)}')" style="font-size:11px;padding:1px 5px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer" title="Dismiss">✕</button>
       </div>
     </div>
   </div>`;
 }
 
-// Render findings tracker — status-first layout with active on top, resolved collapsed
-function toggleGoals() {
-  const content = document.getElementById('goalsContent');
-  const btn = document.getElementById('goalsToggle');
-  content.classList.toggle('collapsed');
-  btn.textContent = content.classList.contains('collapsed') ? '▸' : '▾';
+// Track collapsed project sections across re-renders
+const collapsedProjects = new Set();
+const scaleLabels = { 1: 'XS', 2: 'S', 3: 'M', 4: 'L', 5: 'XL' };
+function toggleProjectCollapse(name) {
+  if (collapsedProjects.has(name)) collapsedProjects.delete(name);
+  else collapsedProjects.add(name);
+  // Re-render to apply
+  if (window._lastTrackerArgs) renderTracker(...window._lastTrackerArgs);
 }
 
-function renderGoals(goalsData) {
-  if (!goalsData) return;
-  const treeEl = document.getElementById('goalsTree');
-  if (!treeEl) return;
-
-  let html = '';
-  const projects = goalsData.projects || {};
-  for (const [name, project] of Object.entries(projects)) {
-    const goals = (project.goals || []).filter(g => g.status !== 'completed');
-
-    html += `<div class="goal-project">`;
-    html += `<div class="goal-project-name">${escHtml(name)}</div>`;
-
-    for (const goal of goals.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
-      const insightCount = (goal.insights || []).length;
-      const sourceClass = goal.source === 'brain' ? 'brain' : goal.source === 'user' ? '' : '';
-      html += `<div class="goal-item">`;
-      html += `<span class="goal-bullet ${sourceClass}">●</span>`;
-      html += `<span class="goal-title" ondblclick="editGoal('${escAttr(goal.id)}', this)">${escHtml(goal.title)}</span>`;
-      if (insightCount > 0) {
-        html += `<span class="goal-insights-count">${insightCount}</span>`;
-      }
-      html += `<span class="goal-meta">${goal.source}</span>`;
-      html += `<span class="goal-actions">`;
-      html += `<button onclick="editGoal('${escAttr(goal.id)}', this.closest('.goal-item').querySelector('.goal-title'))" title="Edit">✎</button>`;
-      html += `<button onclick="removeGoal('${escAttr(goal.id)}')" title="Remove">✕</button>`;
-      html += `</span>`;
-      html += `</div>`;
-    }
-
-    // Add goal input row
-    html += `<div class="goal-add-row">`;
-    html += `<input type="text" placeholder="Add goal..." onkeydown="if(event.key==='Enter')addGoal('${escAttr(name)}',this)">`;
-    html += `<button onclick="addGoal('${escAttr(name)}',this.previousElementSibling)">+</button>`;
-    html += `</div>`;
-    html += `</div>`;
-  }
-
-  // Add project row
-  html += `<div class="goals-add-project">`;
-  html += `<input type="text" placeholder="Add project..." onkeydown="if(event.key==='Enter')addProject(this)">`;
-  html += `<button onclick="addProject(this.previousElementSibling)">+ Project</button>`;
-  html += `</div>`;
-
-  if (Object.keys(projects).length === 0) {
-    html = '<div style="font-size:11px;color:var(--text-dim);padding:4px 0">No goals yet</div>' + html;
-  }
-  treeEl.innerHTML = html;
-}
+// Render findings tracker — unified goals + insights view
 
 function addGoal(project, inputEl) {
   const title = inputEl.value.trim();
@@ -2357,6 +2326,43 @@ function addGoal(project, inputEl) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'add', project, title })
+  });
+}
+
+function removeProject(project) {
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'removeProject', project })
+  });
+}
+
+function setProjectPriority(project, delta) {
+  const goals = window._lastTrackerArgs && window._lastTrackerArgs[2];
+  if (!goals || !goals.projects[project]) return;
+  const cur = goals.projects[project].priority || 99;
+  const newPriority = Math.max(1, cur + delta);
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'setProjectPriority', project, priority: newPriority })
+  });
+}
+
+function setGoalPriority(goalId, delta) {
+  // Find current priority from last state
+  const goals = window._lastTrackerArgs && window._lastTrackerArgs[2];
+  if (!goals) return;
+  let curPriority = 1;
+  for (const p of Object.values(goals.projects || {})) {
+    const g = (p.goals || []).find(g => g.id === goalId);
+    if (g) { curPriority = g.priority || 1; break; }
+  }
+  const newPriority = Math.max(1, curPriority + delta);
+  fetch('/api/goals', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'update', goalId, priority: newPriority })
   });
 }
 
@@ -2414,64 +2420,136 @@ function addProject(inputEl) {
   });
 }
 
-function renderTracker(findingsList, files) {
+function renderTracker(findingsList, files, goalsData) {
+  window._lastTrackerArgs = [findingsList, files, goalsData];
   const el = document.getElementById("tracker");
   const badge = document.getElementById("findingsBadge");
 
   const activeStatuses = ['identified', 'sent', 'received'];
-  const resolvedStatuses = ['implemented', 'ignored', 'failed'];
+  const resolvedStatuses = ['implemented', 'ignored', 'failed', 'parked'];
   const active = findingsList.filter(f => activeStatuses.includes(f.status));
   const resolved = findingsList.filter(f => resolvedStatuses.includes(f.status));
 
-  // Badge shows active count (the ones that matter)
   badge.textContent = active.length || findingsList.length;
 
-  if (!findingsList.length && !files.length) {
+  if (!findingsList.length && !files.length && (!goalsData || !Object.keys(goalsData.projects || {}).length)) {
     el.innerHTML = '<div class="tracker-empty">No findings yet. Start the autopilot to begin tracking.</div>';
     return;
   }
 
   let html = '';
+  const projects = (goalsData && goalsData.projects) || {};
+  // Match server send-priority sort: scale → rating → type
+  const typePriority = { bug: 0, improvement: 1, feature: 2, debt: 3 };
+  const ratingOrder = { good: 0, undefined: 1, null: 1, bad: 2 };
+  const sendSort = (a, b) => {
+    // Scale first: small tasks before big ones
+    const aScale = a.scale || 3;
+    const bScale = b.scale || 3;
+    if (aScale !== bScale) return aScale - bScale;
+    const ra = ratingOrder[a.rating] ?? 1;
+    const rb = ratingOrder[b.rating] ?? 1;
+    if (ra !== rb) return ra - rb;
+    return (typePriority[a.type] ?? 2) - (typePriority[b.type] ?? 2);
+  };
+  // Find the #1 sendable finding (has pendingPrompt or pending message)
+  const hasPending = (f) => f.pendingPrompt || (f.messages && f.messages.some(m => m.status === 'pending'));
+  const sendableFindings = active.filter(f => f.status === 'identified' && hasPending(f)).sort(sendSort);
+  const nextSendId = sendableFindings.length > 0 ? sendableFindings[0].id : null;
 
-  // --- ACTIVE FINDINGS (always visible, grouped by project) ---
-  if (active.length) {
-    html += '<div class="tracker-group">';
-    html += `<div class="tracker-group-header">Active <span class="count">${active.length}</span> <button onclick="dismissAllFindings()" style="margin-left:auto;font-size:9px;padding:2px 8px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px">Dismiss All</button></div>`;
+  // Build goalId → finding[] lookup
+  const findingsByGoal = {};
+  const unlinkedFindings = [];
+  for (const f of active) {
+    if (f.goalId) {
+      if (!findingsByGoal[f.goalId]) findingsByGoal[f.goalId] = [];
+      findingsByGoal[f.goalId].push(f);
+    } else {
+      unlinkedFindings.push(f);
+    }
+  }
 
-    const byProject = {};
-    for (const f of active) {
-      const proj = f.project || inferProject(f.file) || 'general';
-      if (!byProject[proj]) byProject[proj] = [];
-      byProject[proj].push(f);
+  // --- UNIFIED: Project → Goal → Insights ---
+  html += '<div class="tracker-group">';
+  html += `<div class="tracker-group-header">Goals & Insights <span class="count">${active.length}</span> <button onclick="dismissAllFindings()" style="margin-left:auto;font-size:9px;padding:2px 8px;background:none;border:1px solid var(--border);color:var(--text-muted);border-radius:3px;cursor:pointer;text-transform:uppercase;letter-spacing:0.5px">Dismiss All</button></div>`;
+
+  // Sort projects by priority
+  const sortedProjects = Object.entries(projects).sort((a, b) => (a[1].priority || 99) - (b[1].priority || 99));
+  for (const [projName, project] of sortedProjects) {
+    const goals = (project.goals || []).filter(g => g.status !== 'completed');
+    // Get unlinked findings for this project
+    const projUnlinked = unlinkedFindings.filter(f => (f.project || '') === projName);
+
+    const isCollapsed = collapsedProjects.has(projName);
+    html += `<div class="tracker-section">`;
+    html += `<h3 class="clickable">${escHtml(projName)} <span class="count">${goals.length} goals</span> <span class="goal-actions" style="opacity:1;display:inline-flex;margin-left:4px"><button onclick="event.stopPropagation();setProjectPriority('${escAttr(projName)}',-1)" title="Priority up">▲</button><button onclick="event.stopPropagation();setProjectPriority('${escAttr(projName)}',1)" title="Priority down">▼</button><button onclick="event.stopPropagation();removeProject('${escAttr(projName)}')" title="Remove project">✕</button></span> <span class="toggle-arrow" onclick="toggleProjectCollapse('${escAttr(projName)}')" style="cursor:pointer">${isCollapsed ? '▸' : '▾'}</span></h3>`;
+    html += `<div class="${isCollapsed ? 'collapsed' : ''}">`;
+
+    for (const goal of goals.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
+      const sourceClass = goal.source === 'brain' ? 'brain' : '';
+      const linkedFindings = findingsByGoal[goal.id] || [];
+
+      html += `<div class="goal-item">`;
+      html += `<span class="goal-bullet ${sourceClass}">●</span>`;
+      html += `<span class="goal-title" ondblclick="editGoal('${escAttr(goal.id)}', this)">${escHtml(goal.title)}</span>`;
+      if (linkedFindings.length > 0) {
+        html += `<span class="goal-insights-count">${linkedFindings.length}</span>`;
+      }
+      html += `<span class="goal-meta">${goal.source}</span>`;
+      html += `<span class="goal-actions">`;
+      html += `<button onclick="setGoalPriority('${escAttr(goal.id)}',-1)" title="Priority up">▲</button>`;
+      html += `<button onclick="setGoalPriority('${escAttr(goal.id)}',1)" title="Priority down">▼</button>`;
+      html += `<button onclick="editGoal('${escAttr(goal.id)}', this.closest('.goal-item').querySelector('.goal-title'))" title="Edit">✎</button>`;
+      html += `<button onclick="removeGoal('${escAttr(goal.id)}')" title="Remove">✕</button>`;
+      html += `</span>`;
+      html += `</div>`;
+
+      // Nested insights under this goal
+      if (linkedFindings.length > 0) {
+        html += '<div style="margin-left:24px;border-left:2px solid var(--border-light);padding-left:8px;margin-bottom:4px">';
+        for (const f of linkedFindings.sort(sendSort)) {
+          html += renderFindingCard(f, f.id === nextSendId);
+        }
+        html += '</div>';
+      }
     }
 
-    const statusOrder = { sent: 0, received: 1, identified: 2 };
-    for (const proj of Object.keys(byProject).sort()) {
-      const projFindings = byProject[proj];
-      html += `<div class="tracker-section"><h3>${escHtml(proj)} <span class="count">${projFindings.length}</span></h3>`;
-
-      // Parent/child hierarchy
-      const parentIds = new Set(projFindings.filter(f => f.parentId).map(f => f.parentId));
-      const parents = projFindings.filter(f => parentIds.has(f.id));
-      const children = projFindings.filter(f => f.parentId);
-      const standalone = projFindings.filter(f => !f.parentId && !parentIds.has(f.id));
-      const ordered = [...parents, ...standalone].sort((a, b) => (statusOrder[a.status] ?? 2) - (statusOrder[b.status] ?? 2));
-
-      for (const f of ordered) {
-        html += renderFindingCard(f);
-        const kids = children.filter(c => c.parentId === f.id);
-        if (kids.length) {
-          html += '<div style="margin-left:16px;border-left:2px solid var(--border);padding-left:8px">';
-          for (const kid of kids) html += renderFindingCard(kid);
-          html += '</div>';
-        }
+    // Unlinked findings for this project
+    if (projUnlinked.length > 0) {
+      html += `<div style="margin-top:4px;padding-left:12px;border-left:2px dashed var(--border);margin-left:6px">`;
+      html += `<div style="font-size:10px;color:var(--text-muted);padding:2px 0;text-transform:uppercase;letter-spacing:0.5px">Unlinked insights</div>`;
+      for (const f of projUnlinked.sort(sendSort)) {
+        html += renderFindingCard(f, f.id === nextSendId);
       }
       html += '</div>';
     }
-    html += '</div>';
-  } else {
-    html += '<div class="tracker-group"><div class="tracker-group-header" style="color:var(--green)">No active findings</div></div>';
+
+    // Add goal input row
+    html += `<div class="goal-add-row">`;
+    html += `<input type="text" placeholder="Add goal..." onkeydown="if(event.key==='Enter')addGoal('${escAttr(projName)}',this)">`;
+    html += `<button onclick="addGoal('${escAttr(projName)}',this.previousElementSibling)">+</button>`;
+    html += `</div>`;
+    html += `</div>`; // close collapsible div
+    html += `</div>`; // close tracker-section
   }
+
+  // Findings with no project or project not in goals
+  const orphanFindings = unlinkedFindings.filter(f => !projects[f.project || '']);
+  if (orphanFindings.length > 0) {
+    html += `<div class="tracker-section">`;
+    html += `<h3>Other <span class="count">${orphanFindings.length}</span></h3>`;
+    for (const f of orphanFindings.sort(sendSort)) {
+      html += renderFindingCard(f);
+    }
+    html += `</div>`;
+  }
+
+  // Add project row
+  html += `<div class="goals-add-project">`;
+  html += `<input type="text" placeholder="Add project..." onkeydown="if(event.key==='Enter')addProject(this)">`;
+  html += `<button onclick="addProject(this.previousElementSibling)">+ Project</button>`;
+  html += `</div>`;
+  html += '</div>';
 
   // --- FILES INVESTIGATED (compact) ---
   if (files.length) {
@@ -2490,8 +2568,10 @@ function renderTracker(findingsList, files) {
     const implCount = resolved.filter(f => f.status === 'implemented').length;
     const ignCount = resolved.filter(f => f.status === 'ignored').length;
     const failCount = resolved.filter(f => f.status === 'failed').length;
+    const parkCount = resolved.filter(f => f.status === 'parked').length;
     const parts = [];
     if (implCount) parts.push(`${implCount} implemented`);
+    if (parkCount) parts.push(`${parkCount} parked`);
     if (ignCount) parts.push(`${ignCount} ignored`);
     if (failCount) parts.push(`${failCount} failed`);
 
@@ -2527,16 +2607,12 @@ function renderTracker(findingsList, files) {
 
 function inferProject(filePath) {
   if (!filePath) return null;
-  // Extract project name from common project directory patterns
-  const patterns = [
-    /\/(?:Documents\/Code|projects|repos|workspace|src|Sites)\/([^/]+)/,
-    /\/home\/\w+\/([^/]+)/,
-    /\/opt\/([^/]+)/,
-  ];
-  for (const re of patterns) {
-    const m = filePath.match(re);
-    if (m) return m[1];
-  }
+  // Extract project name from common code directory patterns
+  const m = filePath.match(/(?:\/Documents\/Code|\/projects|\/repos|\/src|\/home\/\w+)\/([^/]+)/);
+  if (m) return m[1];
+  // Try /opt/project/...
+  const m2 = filePath.match(/\/opt\/([^/]+)/);
+  if (m2) return m2[1];
   // Relative paths like "my-project/server.js"
   const m3 = filePath.match(/^([^/]+)\//);
   if (m3) return m3[1];

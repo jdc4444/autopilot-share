@@ -7,16 +7,17 @@ const { WebSocketServer } = require("ws");
 const crypto = require("crypto");
 const sharp = require("sharp");
 
+
 const execAsync = promisify(exec);
 
-// Ensure PATH includes common binary locations
+// Ensure Electron inherits proper PATH for homebrew/system binaries
 if (!process.env.PATH || !process.env.PATH.includes("/opt/homebrew/bin")) {
   process.env.PATH = `/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || "/usr/bin:/bin"}`;
 }
 
 const HOME = require("os").homedir();
 const PORT = parseInt(process.env.PORT) || 3460;
-const APP_DIR = __dirname; // wherever this repo lives
+const APP_DIR = __dirname;
 const SCREENSHOT_PATH = "/tmp/autopilot-share/screen.png";
 const SEND_SCRIPT = path.join(APP_DIR, "send_to_claude.py");
 const AUTOPILOT_DIR = path.join(APP_DIR, "knowledge");
@@ -25,7 +26,6 @@ try { fs.mkdirSync("/tmp/autopilot-share", { recursive: true }); } catch {}
 try { fs.mkdirSync(AUTOPILOT_DIR, { recursive: true }); } catch {}
 
 // ── Auto-detect paths ──────────────────────────────────────────────────────
-// Find Claude CLI
 function findClaude() {
   for (const p of [
     "/opt/homebrew/bin/claude",
@@ -36,10 +36,9 @@ function findClaude() {
     if (fs.existsSync(p)) return p;
   }
   try { return execFileSync("which", ["claude"], { encoding: "utf8", timeout: 3000 }).trim(); } catch {}
-  return "claude"; // fallback to PATH
+  return "claude";
 }
 
-// Find system Node (not Electron's)
 function findSystemNode() {
   for (const p of ["/opt/homebrew/bin/node", "/usr/local/bin/node"]) {
     if (fs.existsSync(p)) return p;
@@ -50,18 +49,13 @@ function findSystemNode() {
 
 const CLAUDE_PATH = findClaude();
 const SYSTEM_NODE = findSystemNode();
-
-// Auto-detect projects base and sessions directories
 const PROJECTS_BASE = path.join(HOME, ".claude/projects");
 
-// Find the most relevant project session directory for the user's CWD
-// Claude Code stores sessions in ~/.claude/projects/-PATH-ENCODED/
 function findSessionsDir(cwd) {
   if (!fs.existsSync(PROJECTS_BASE)) return null;
   const encoded = cwd.replace(/\//g, "-");
   const exact = path.join(PROJECTS_BASE, encoded);
   if (fs.existsSync(exact)) return exact;
-  // Try to find the closest match
   try {
     const dirs = fs.readdirSync(PROJECTS_BASE)
       .filter(d => fs.statSync(path.join(PROJECTS_BASE, d)).isDirectory())
@@ -75,14 +69,11 @@ function findSessionsDir(cwd) {
   return null;
 }
 
-// Find memory directory — looks for MEMORY.md in any project session dir
 function findMemoryDir() {
   if (!fs.existsSync(PROJECTS_BASE)) return null;
   try {
     const dirs = fs.readdirSync(PROJECTS_BASE)
-      .filter(d => {
-        try { return fs.statSync(path.join(PROJECTS_BASE, d)).isDirectory(); } catch { return false; }
-      });
+      .filter(d => { try { return fs.statSync(path.join(PROJECTS_BASE, d)).isDirectory(); } catch { return false; } });
     for (const d of dirs) {
       const memDir = path.join(PROJECTS_BASE, d, "memory");
       if (fs.existsSync(path.join(memDir, "MEMORY.md"))) return memDir;
@@ -91,9 +82,9 @@ function findMemoryDir() {
   return null;
 }
 
-// Detect user's working directory — configurable via env or auto-detect
 const USER_CWD = process.env.AUTOPILOT_CWD || process.cwd();
 const MEMORY_DIR = findMemoryDir();
+const SESSIONS_DIR = findSessionsDir(USER_CWD) || path.join(PROJECTS_BASE, USER_CWD.replace(/\//g, "-"));
 
 // Agent system prompt — defines who the brain is and what it can do
 let SYSTEM_PROMPT = `You are Autopilot — a product-minded collaborator who thinks like a user, not a linter.
@@ -178,11 +169,12 @@ Every insight you generate should connect to a user goal. If no goal fits, the s
 ## Output format
 End your response with:
 \`\`\`json
-{"reply": "what you say to the dashboard user", "suggestedPrompt": "actionable prompt for Claude Desktop, linked to an insight", "suggestedTitle": "3-8 word summary", "suggestedFindingId": "the insight id this prompt addresses", "question": "optional — a question to ASK Claude Desktop instead of suggesting", "findings": [{"id": "unique-slug", "type": "bug|feature|improvement|debt|question", "title": "short title", "file": "path/to/file or null", "project": "project-name", "detail": "1-2 sentence explanation", "goalId": "id of the goal this insight serves", "messages": [{"text": "prompt for Claude Desktop", "priority": "high|normal|low"}]}], "goalUpdates": [{"id": "goal-id", "status": "active|completed|paused"}], "newGoals": [{"title": "user goal you identified from context", "project": "project-name", "source": "brain"}], "statusUpdates": [{"id": "finding-id", "status": "implemented|received|failed"}], "filesInvestigated": ["paths you read this cycle"], "status": "active or idle"}
+{"reply": "what you say to the dashboard user", "suggestedPrompt": "actionable prompt for Claude Desktop, linked to an insight", "suggestedTitle": "3-8 word summary", "suggestedFindingId": "the insight id this prompt addresses", "question": "optional — a question to ASK Claude Desktop instead of suggesting", "findings": [{"id": "unique-slug", "type": "bug|feature|improvement|debt|question", "title": "short title", "file": "path/to/file or null", "project": "project-name", "detail": "1-2 sentence explanation", "scale": 1, "goalId": "id of the goal this insight serves", "messages": [{"text": "prompt for Claude Desktop", "priority": "high|normal|low"}]}], "goalUpdates": [{"id": "goal-id", "status": "active|completed|paused"}], "newGoals": [{"title": "user goal you identified from context", "project": "project-name", "source": "brain"}], "statusUpdates": [{"id": "finding-id", "status": "implemented|received|failed"}], "filesInvestigated": ["paths you read this cycle"], "status": "active or idle"}
 \`\`\`
 ### Insight structure
 - **Insights** (listed as "findings" in JSON for backward compat) are observations tied to user goals. They persist across cycles and build on each other.
 - **goalId** — link every insight to a goal. Check the goals list in your context for the right ID.
+- **scale** (1-5) — effort estimate. 1=trivial fix (typo, one-liner), 2=small (single function change), 3=medium (multi-file, ~30min), 4=large (new feature, refactor), 5=epic (architecture change, multi-day). System sends scale 1-2 insights first. Always set scale.
 - **Messages are actions** — specific prompts to send to Claude Desktop. Add them in the insight's "messages" array.
 - **Fuzzy matching** — if you create an insight similar to an existing one, the system auto-merges.
 - **newGoals** — if you identify a user goal not yet in the system, emit it. Brain-sourced goals get lowest priority.
@@ -192,6 +184,9 @@ End your response with:
 - statusUpdates: promote insights when you have evidence (screenshot, git, code).
 IMPORTANT: reply must be valid JSON. Use \\n for newlines, \\" for quotes.
 - DO NOT echo the suggestedPrompt text in your reply.`;
+
+
+// Voice profile loaded dynamically at startup — see generateVoiceProfile() below
 
 fs.writeFileSync(SYSTEM_PROMPT_FILE, SYSTEM_PROMPT);
 
@@ -224,9 +219,6 @@ function loadMemories() {
   }
 }
 loadMemories();
-
-// Voice profile is loaded later after knowledge system is initialized
-// (see loadVoiceProfile() and generateVoiceProfile() below)
 
 // ============================================================
 // KNOWLEDGE SYSTEM — thread scanner, autopilot memory, goals, prompts
@@ -272,13 +264,23 @@ function initKnowledgeFiles() {
 initKnowledgeFiles();
 
 // Findings tracker — persisted across restarts
-let findings = [];
-let filesInvestigated = [];
+let findings = [];        // [{id, type, title, file, detail, status, firstSeen, lastSeen, sentAt, goalId}]
+let filesInvestigated = []; // unique file paths the brain has checked
 try {
   const fd = JSON.parse(fs.readFileSync(FINDINGS_FILE, "utf8"));
   findings = fd.findings || [];
   filesInvestigated = fd.filesInvestigated || [];
-} catch {}
+} catch (e) {
+  if (fs.existsSync(FINDINGS_FILE)) {
+    console.error("[startup] findings.json corrupted, trying backup:", e.message);
+    try {
+      const fd = JSON.parse(fs.readFileSync(FINDINGS_FILE + ".bak", "utf8"));
+      findings = fd.findings || [];
+      filesInvestigated = fd.filesInvestigated || [];
+      console.log("[startup] Recovered", findings.length, "findings from backup");
+    } catch { console.error("[startup] Backup also failed — starting with empty findings"); }
+  }
+}
 
 // Goals system — Mission → Project → Goal → Insight hierarchy
 let goalsData = { mission: "", projects: {}, unlinked_insights: [], updated: null };
@@ -297,14 +299,17 @@ function saveGoals() {
 }
 
 function findGoalForInsight(insight) {
+  // Try to match insight to a goal by project + content relevance
   const project = insight.project;
   if (!project || !goalsData.projects[project]) return null;
   const goals = goalsData.projects[project].goals || [];
   if (goals.length === 0) return null;
+  // If insight has explicit goalId, use it
   if (insight.goalId) {
     const match = goals.find(g => g.id === insight.goalId);
     if (match) return match;
   }
+  // Otherwise find best matching active goal by word overlap
   const insightText = `${insight.title} ${insight.detail || ""}`.toLowerCase();
   let bestGoal = null;
   let bestScore = 0;
@@ -324,6 +329,7 @@ function linkInsightToGoal(insight) {
   const goal = findGoalForInsight(insight);
   if (goal) {
     insight.goalId = goal.id;
+    // Add to goal's insights list if not already there
     if (!goal.insights) goal.insights = [];
     if (!goal.insights.includes(insight.id)) {
       goal.insights.push(insight.id);
@@ -331,6 +337,7 @@ function linkInsightToGoal(insight) {
     }
     return goal;
   }
+  // No matching goal — add to unlinked
   if (!goalsData.unlinked_insights.includes(insight.id)) {
     goalsData.unlinked_insights.push(insight.id);
     saveGoals();
@@ -340,7 +347,7 @@ function linkInsightToGoal(insight) {
 
 // Extract goals from thread digest user messages
 function extractGoalsFromThreads() {
-  loadGoals();
+  loadGoals(); // Re-read from disk to respect external edits
   const digest = loadKnowledge().threadDigest;
   const sessions = Object.values(digest.sessions || {})
     .filter(s => s.messageCount > 0 && s.userMessages && s.userMessages.length > 0)
@@ -349,19 +356,35 @@ function extractGoalsFromThreads() {
   for (const session of sessions) {
     const project = session.inferredProject;
     if (!project) continue;
+    // Skip non-project names (files, generic paths)
     if (project.includes('.') || project.length < 3) continue;
+
+    // Ensure project exists in goals
     if (!goalsData.projects[project]) {
-      goalsData.projects[project] = { description: "", goals: [] };
+      goalsData.projects[project] = {
+        description: "",
+        goals: [],
+      };
     }
+
+    // Look for goal-like user messages — must be substantive requests, not casual chat
+    // Require: 30+ chars, multiple meaningful words, describes a feature/fix/change
     for (const msg of session.userMessages) {
       if (msg.length < 30) continue;
+      // Skip generic/short responses
       if (/^(continue|yes|no|ok|thanks|sure|yeah|hey|hi|hello|stop|wait|go|run|push|commit|check|print|show|read|open|close|try|test|see|look|do|done|skip|nah|nope|lol|hmm|huh|what|why|how|where|when|this|in |i can|i like|i think|i feel|i know|i just|i don)/i.test(msg)) continue;
+      // Skip exclamatory/emotional messages
       if (/[!]{2,}/.test(msg)) continue;
+      // Skip questions that aren't feature requests
       if (/^\s*(why|what|how|where|when|can|does|is|are|do|did)\b/i.test(msg) && !/\b(add|build|create|implement|make it)\b/i.test(msg)) continue;
+      // Must have an action verb + object pattern suggesting a real goal
       const hasGoalStructure = /\b(build|create|add|implement|fix|improve|update|redesign|refactor|integrate|migrate|set up|configure|enable|support)\b.{5,}/i.test(msg);
       if (!hasGoalStructure) continue;
+      // Must have enough content words (not just "make it work")
       const contentWords = msg.split(/\s+/).filter(w => w.length > 3);
       if (contentWords.length < 4) continue;
+
+      // Check if this goal already exists (fuzzy match)
       const existingGoals = goalsData.projects[project].goals;
       const msgLower = msg.toLowerCase();
       const isDup = existingGoals.some(g => {
@@ -370,6 +393,7 @@ function extractGoalsFromThreads() {
         const overlap = gWords.filter(w => mWords.includes(w)).length;
         return overlap >= Math.min(3, gWords.length * 0.5);
       });
+
       if (!isDup && existingGoals.length < 10) {
         existingGoals.push({
           id: `goal-${project}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -386,8 +410,9 @@ function extractGoalsFromThreads() {
   saveGoals();
 }
 
+// Link existing findings to goals on startup
 function linkExistingFindings() {
-  loadGoals();
+  loadGoals(); // Re-read from disk to respect external edits
   for (const f of findings) {
     if (!f.goalId && f.project) {
       linkInsightToGoal(f);
@@ -408,16 +433,22 @@ function saveFindings() {
 
 function reloadFindingsFromDisk() {
   try {
-    const fd = JSON.parse(fs.readFileSync(FINDINGS_FILE, "utf8"));
+    const raw = fs.readFileSync(FINDINGS_FILE, "utf8");
+    const fd = JSON.parse(raw);
     findings = fd.findings || [];
     filesInvestigated = fd.filesInvestigated || [];
-  } catch {}
+    // Save backup on successful parse so we can recover from corruption
+    try { fs.writeFileSync(FINDINGS_FILE + ".bak", raw); } catch {}
+  } catch (e) {
+    console.error("[findings] Failed to reload findings.json — preserving in-memory state:", e.message);
+  }
 }
 
+// Find a fuzzy match among existing findings (>50% word overlap on title+detail)
 function findFuzzyMatch(nf) {
   const nfText = `${nf.title} ${nf.detail || ""}`;
   for (const f of findings) {
-    if (f.id === nf.id) return f;
+    if (f.id === nf.id) return f; // exact ID match
     const fText = `${f.title} ${f.detail || ""}`;
     if (similarity(nfText, fText) > 0.5 && f.project === nf.project) return f;
   }
@@ -425,22 +456,32 @@ function findFuzzyMatch(nf) {
 }
 
 function mergeFindings(newFindings, newFiles) {
+  // Re-read from disk so external edits are respected
   reloadFindingsFromDisk();
+
   const now = new Date().toISOString();
+  // Merge files
   if (newFiles && newFiles.length) {
     for (const f of newFiles) {
       if (!filesInvestigated.includes(f)) filesInvestigated.push(f);
     }
   }
+  // Merge findings — exact ID match, then fuzzy match, then add new
   if (newFindings && newFindings.length) {
     for (const nf of newFindings) {
       if (!nf.id || !nf.title) continue;
+
+      // Server-side filter: reject findings about non-active projects
       if (activeProjects.length > 0 && nf.project && !activeProjects.some(p => nf.project.includes(p))) {
         console.log(`[mergeFindings] Rejected finding "${nf.id}" — project "${nf.project}" not in active projects`);
         continue;
       }
+
+      // Try exact ID match first, then fuzzy
       let existing = findings.find(f => f.id === nf.id) || findFuzzyMatch(nf);
+
       if (existing) {
+        // Merge into existing finding
         existing.title = nf.title;
         existing.detail = nf.detail || existing.detail;
         existing.file = nf.file || existing.file;
@@ -448,27 +489,36 @@ function mergeFindings(newFindings, newFiles) {
         existing.project = nf.project || existing.project;
         existing.lastSeen = now;
         if (nf.parentId) existing.parentId = nf.parentId;
+
+        // Brain can only set "identified" — all other statuses are system-managed
         const protectedStatuses = ["sent", "received", "implemented", "ignored", "failed"];
         if (nf.status && !protectedStatuses.includes(existing.status)) {
           existing.status = nf.status;
         }
+
+        // Append new messages if provided
         if (nf.messages && nf.messages.length) {
           if (!existing.messages) existing.messages = [];
           for (const msg of nf.messages) {
+            // Dedup messages by text similarity
             const isDup = existing.messages.some(m => similarity(m.text, msg.text) > 0.6);
             if (!isDup) existing.messages.push({ ...msg, addedAt: now });
           }
         }
+
+        // If brain sends a pendingPrompt, also store it as a message
         if (nf.pendingPrompt && !existing.messages?.some(m => similarity(m.text, nf.pendingPrompt) > 0.6)) {
           if (!existing.messages) existing.messages = [];
           existing.messages.push({ text: nf.pendingPrompt, status: "pending", addedAt: now });
           existing.pendingPrompt = nf.pendingPrompt;
         }
+
         if (existing.id !== nf.id) {
           console.log(`[mergeFindings] Fuzzy-merged "${nf.id}" into "${existing.id}"`);
         }
         broadcastFindingUpdate(existing.id, existing.status);
       } else {
+        // New finding
         const finding = {
           ...nf,
           status: "identified",
@@ -476,15 +526,18 @@ function mergeFindings(newFindings, newFiles) {
           lastSeen: now,
           messages: [],
         };
+        // If brain sent a pendingPrompt, store it as the first message too
         if (nf.pendingPrompt) {
           finding.messages.push({ text: nf.pendingPrompt, status: "pending", addedAt: now });
         }
+        // If brain sent explicit messages, add them
         if (nf.messages && nf.messages.length) {
           for (const msg of nf.messages) {
             finding.messages.push({ ...msg, addedAt: now });
           }
         }
         findings.push(finding);
+        // Link new insight to a goal
         const linkedGoal = linkInsightToGoal(finding);
         addChat("finding", nf.title, { finding: { id: nf.id, type: nf.type || "finding", title: nf.title, detail: nf.detail, file: nf.file, project: nf.project, status: "identified", pendingPrompt: nf.pendingPrompt || null, parentId: nf.parentId || null, goalId: finding.goalId || null } });
         if (linkedGoal) {
@@ -496,6 +549,7 @@ function mergeFindings(newFindings, newFiles) {
   saveFindings();
 }
 
+// Read knowledge files for brain context
 function loadKnowledge() {
   const knowledge = {};
   try { knowledge.memory = fs.readFileSync(AUTOPILOT_MEMORY_FILE, "utf8"); } catch { knowledge.memory = ""; }
@@ -509,6 +563,7 @@ function loadKnowledge() {
 // Scans recent JSONL session logs across ALL project directories
 function scanRecentThreads() {
   try {
+    // Gather session files from all project directories
     let allFiles = [];
     try {
       const projectDirs = fs.readdirSync(PROJECTS_BASE)
@@ -523,11 +578,14 @@ function scanRecentThreads() {
         } catch {}
       }
     } catch {
-      return { sessions: {}, lastScan: null };
+      // Fallback to single dir
+      allFiles = fs.readdirSync(SESSIONS_DIR)
+        .filter(f => f.endsWith(".jsonl"))
+        .map(f => ({ name: f, path: path.join(SESSIONS_DIR, f), mtime: fs.statSync(path.join(SESSIONS_DIR, f)).mtimeMs }));
     }
     const files = allFiles
       .sort((a, b) => b.mtime - a.mtime)
-      .slice(0, 15);
+      .slice(0, 15); // last 15 sessions
 
     const digest = loadKnowledge().threadDigest;
     let newData = false;
@@ -535,7 +593,7 @@ function scanRecentThreads() {
     for (const file of files) {
       const sessionId = file.name.replace(".jsonl", "");
       const existing = digest.sessions[sessionId];
-      if (existing && existing.scannedAt >= file.mtime) continue;
+      if (existing && existing.scannedAt >= file.mtime) continue; // already scanned
 
       newData = true;
       const userMessages = [];
@@ -544,18 +602,21 @@ function scanRecentThreads() {
       let lastTimestamp = null;
       let sessionCwd = null;
       let lastAssistantText = null;
-      let lastEditedFile = null;
-      const projectRefs = {};
+      let lastEditedFile = null; // track the most recent file edited via Edit/Write tools
+      const projectRefs = {}; // track which subdirectories are referenced in tool calls
 
       try {
+        // For large files (>10MB), use grep to extract only relevant lines
         const fileSize = fs.statSync(file.path).size;
         let lines;
         if (fileSize > 10 * 1024 * 1024) {
           try {
+            // Get last 2MB of file (recent activity is more representative), then first 500KB for context
             const tailResult = execFileSync("tail", ["-c", "2000000", file.path], { encoding: "utf8", timeout: 10000, maxBuffer: 3 * 1024 * 1024 });
             const tailLines = tailResult.split("\n").filter(Boolean);
             const headResult = execFileSync("head", ["-c", "500000", file.path], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 });
             const headLines = headResult.split("\n").filter(Boolean);
+            // Combine head + tail, dedup by keeping a Set of line starts
             const seen = new Set();
             lines = [];
             for (const l of [...headLines, ...tailLines]) {
@@ -563,6 +624,7 @@ function scanRecentThreads() {
               if (!seen.has(key)) { seen.add(key); lines.push(l); }
             }
           } catch {
+            // Fallback: read last 500 lines
             const tailResult = execFileSync("tail", ["-500", file.path], { encoding: "utf8", timeout: 5000 });
             lines = tailResult.split("\n").filter(Boolean);
           }
@@ -576,26 +638,32 @@ function scanRecentThreads() {
             const d = JSON.parse(line);
             if (!firstTimestamp && d.timestamp) firstTimestamp = d.timestamp;
             if (d.timestamp) lastTimestamp = d.timestamp;
+
+            // Extract user-typed messages (enqueue operations have the raw text)
             if (d.type === "queue-operation" && d.operation === "enqueue" && d.content) {
               const text = d.content.trim();
+              // Skip task notifications and system stuff
               if (text && !text.startsWith("<task-notification") && text.length > 2 && text.length < 500) {
                 userMessages.push(text);
               }
             }
+            // Track tool usage
             if (d.type === "assistant") {
               const msg = d.message;
               if (msg && Array.isArray(msg.content)) {
                 for (const block of msg.content) {
                   if (block.type === "tool_use") {
                     tools.add(block.name);
+                    // Infer project from file paths in tool inputs
                     const input = block.input || {};
                     const paths = [input.file_path, input.path, input.command, input.pattern, input.glob].filter(Boolean);
                     for (const p of paths) {
-                      // Generic project inference: look for common code directory patterns
+                      // Use matchAll to catch multiple project refs in a single command string
                       for (const m of String(p).matchAll(/(?:\/Documents\/Code|\/projects|\/repos|\/src|\/home\/\w+)\/([^/\s"']+)/g)) {
                         if (m[1]) projectRefs[m[1]] = (projectRefs[m[1]] || 0) + 1;
                       }
                     }
+                    // Track last edited file (Edit/Write tools have file_path)
                     if ((block.name === "Edit" || block.name === "Write") && input.file_path) {
                       lastEditedFile = input.file_path;
                     }
@@ -604,14 +672,16 @@ function scanRecentThreads() {
                 }
               }
             }
+            // Extract cwd from session data
             if (d.cwd && !sessionCwd) sessionCwd = d.cwd;
-          } catch {}
+          } catch {} // skip malformed lines
         }
       } catch (e) {
         console.error(`Failed to scan ${file.name}: ${e.message}`);
         continue;
       }
 
+      // Infer project from most-referenced subdirectory in tool calls
       const inferredProject = Object.entries(projectRefs).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
 
       digest.sessions[sessionId] = {
@@ -619,7 +689,7 @@ function scanRecentThreads() {
         firstTimestamp,
         lastTimestamp,
         messageCount: userMessages.length,
-        userMessages: [...new Set(userMessages)].slice(0, 50),
+        userMessages: [...new Set(userMessages)].slice(0, 50), // dedup + cap at 50
         toolsUsed: [...tools],
         cwd: sessionCwd || null,
         projectDir: file.projectDir || null,
@@ -629,7 +699,7 @@ function scanRecentThreads() {
       };
     }
 
-    // Purge brain's own sessions
+    // Purge brain's own sessions — they have 0 user messages and pollute the digest
     for (const [sid, sdata] of Object.entries(digest.sessions)) {
       if (sdata.messageCount === 0 && (!sdata.userMessages || sdata.userMessages.length === 0)) {
         delete digest.sessions[sid];
@@ -664,9 +734,6 @@ function scanRecentThreads() {
 // VOICE PROFILE GENERATION — 3-step: collect messages → analyze → write doc
 // ============================================================
 
-// Default voice profile used when insufficient message history exists.
-// Generic enough for any power user of Claude Code. Gets replaced once
-// enough messages accumulate for a real analysis.
 const DEFAULT_VOICE_PROFILE = `## Voice & Style
 
 - **Concise and action-oriented.** Most messages are direct instructions — short imperative sentences, not paragraphs. Users of CLI tools tend to be terse.
@@ -701,16 +768,13 @@ const DEFAULT_VOICE_PROFILE = `## Voice & Style
 4. "why is this still showing stale data. check the cache logic"
 5. "stop explaining and just do it. show me the result"`;
 
-
 // Step 1: Pull ~1000 user messages from ALL JSONL session logs
 function collectUserMessages(targetCount = 1000) {
   const messages = [];
   if (!fs.existsSync(PROJECTS_BASE)) return messages;
-
   try {
     const projectDirs = fs.readdirSync(PROJECTS_BASE)
       .filter(d => { try { return fs.statSync(path.join(PROJECTS_BASE, d)).isDirectory(); } catch { return false; } });
-
     let allFiles = [];
     for (const dir of projectDirs) {
       const dirPath = path.join(PROJECTS_BASE, dir);
@@ -721,17 +785,13 @@ function collectUserMessages(targetCount = 1000) {
         allFiles.push(...files);
       } catch {}
     }
-
-    // Sort by recency, process newest first
     allFiles.sort((a, b) => b.mtime - a.mtime);
-
     for (const file of allFiles) {
       if (messages.length >= targetCount) break;
       try {
         const fileSize = fs.statSync(file.path).size;
         let content;
         if (fileSize > 10 * 1024 * 1024) {
-          // Large file — sample head + tail
           try {
             content = execFileSync("head", ["-c", "2000000", file.path], { encoding: "utf8", timeout: 5000 });
             content += "\n" + execFileSync("tail", ["-c", "2000000", file.path], { encoding: "utf8", timeout: 5000 });
@@ -739,7 +799,6 @@ function collectUserMessages(targetCount = 1000) {
         } else {
           content = fs.readFileSync(file.path, "utf8");
         }
-
         for (const line of content.split("\n")) {
           if (messages.length >= targetCount) break;
           if (!line.trim()) continue;
@@ -747,7 +806,6 @@ function collectUserMessages(targetCount = 1000) {
             const d = JSON.parse(line);
             if (d.type === "queue-operation" && d.operation === "enqueue" && d.content) {
               const text = d.content.trim();
-              // Filter out system messages, very short/long messages, and duplicates
               if (text && !text.startsWith("<task-notification") && !text.startsWith("<") &&
                   text.length > 5 && text.length < 2000) {
                 messages.push(text);
@@ -760,30 +818,23 @@ function collectUserMessages(targetCount = 1000) {
   } catch (e) {
     console.error("collectUserMessages error:", e.message);
   }
-
-  // Deduplicate
   return [...new Set(messages)].slice(0, targetCount);
 }
 
 // Step 2: Analyze messages using Agent SDK (same auth as brain — no API key needed)
 async function analyzeVoicePatterns(messages) {
   const { query } = require("@anthropic-ai/claude-agent-sdk");
-
-  // Sample strategically: take messages spread across the collection
   const sample = [];
   const step = Math.max(1, Math.floor(messages.length / 200));
   for (let i = 0; i < messages.length && sample.length < 200; i += step) {
     sample.push(messages[i]);
   }
-  // Also add some random ones for variety
   const shuffled = [...messages].sort(() => Math.random() - 0.5);
   for (const m of shuffled) {
     if (sample.length >= 300) break;
     if (!sample.includes(m)) sample.push(m);
   }
-
   const messagesText = sample.map((m, i) => `${i + 1}. "${m}"`).join("\n");
-
   const prompt = `You are analyzing a user's messages to Claude to build a voice profile. Here are ${sample.length} messages from their Claude Code sessions (out of ${messages.length} total collected):
 
 ${messagesText}
@@ -836,7 +887,6 @@ Be specific and data-driven — reference actual patterns from the messages. Thi
       resultText = message.result;
     }
   }
-
   if (!resultText) throw new Error("Voice analysis returned empty result");
   return resultText;
 }
@@ -904,7 +954,6 @@ async function generateVoiceProfile() {
     return true;
   } catch (e) {
     console.error("Voice profile generation failed:", e.message);
-    // Fall back to default profile on any failure (missing API key, network, etc.)
     addChat("system", `Voice analysis unavailable (${e.message.split("—")[0].trim()}). Using default profile.`);
     broadcastState();
     writeVoiceProfile(DEFAULT_VOICE_PROFILE, 0);
@@ -913,6 +962,7 @@ async function generateVoiceProfile() {
   }
 }
 
+// Build a compact thread summary for the brain
 function buildThreadSummary() {
   const digest = loadKnowledge().threadDigest;
   const allSessions = Object.entries(digest.sessions)
@@ -921,6 +971,7 @@ function buildThreadSummary() {
 
   if (allSessions.length === 0) return "";
 
+  // Split into active-project sessions and others
   const isActiveProject = (data) => {
     const project = data.inferredProject || (data.cwd ? path.basename(data.cwd) : null);
     if (!project) return false;
@@ -933,6 +984,7 @@ function buildThreadSummary() {
 
   let summary = "";
 
+  // Active project sessions get full detail
   if (activeSessions.length > 0) {
     summary += `## Active Project Threads (${activeProjects.join(", ")})\n`;
     for (const [id, data] of activeSessions) {
@@ -942,6 +994,7 @@ function buildThreadSummary() {
         !m.startsWith("continue") && !m.startsWith("<") && m.length > 5
       ))].slice(0, 10);
       if (msgs.length === 0) continue;
+
       summary += `\n### Session ${id.slice(0, 8)} — ${project} (${date}, ${data.messageCount} msgs)\n`;
       if (data.lastAssistantText) {
         summary += `Last response: "${data.lastAssistantText.slice(0, 300)}"\n`;
@@ -953,6 +1006,7 @@ function buildThreadSummary() {
     }
   }
 
+  // Other sessions get compressed one-liners
   if (otherSessions.length > 0) {
     summary += `\n## Other Recent Threads\n`;
     for (const [id, data] of otherSessions) {
@@ -969,6 +1023,7 @@ function buildThreadSummary() {
 // Thread scan loop — runs every 5 minutes
 let threadScanTimer = null;
 function startThreadScanLoop() {
+  // Initial scan
   scanRecentThreads();
   threadScanTimer = setInterval(() => {
     scanRecentThreads();
@@ -977,12 +1032,14 @@ function startThreadScanLoop() {
 }
 startThreadScanLoop();
 
+// Extract goals from threads and link existing findings on startup
 setTimeout(() => {
   extractGoalsFromThreads();
   linkExistingFindings();
   console.log(`[goals] Loaded ${Object.keys(goalsData.projects).length} projects, ${Object.values(goalsData.projects).reduce((s, p) => s + (p.goals?.length || 0), 0)} goals`);
 }, 2000);
 
+// Re-extract goals from threads whenever thread scanner runs
 const origScanRecentThreads = scanRecentThreads;
 scanRecentThreads = function() {
   const result = origScanRecentThreads();
@@ -995,22 +1052,34 @@ let running = false;
 let state = "IDLE";
 let cycleCount = 0;
 const MUTE_FILE = path.join(AUTOPILOT_DIR, "mute-state.json");
-let muteMode = (() => { try { return JSON.parse(fs.readFileSync(MUTE_FILE, "utf8")).muted; } catch { return true; } })();
+let muteMode = (() => {
+  try {
+    const val = JSON.parse(fs.readFileSync(MUTE_FILE, "utf8")).muted;
+    console.log(`[startup] Loaded mute state from disk: ${val}`);
+    return val;
+  } catch (e) {
+    console.error(`[startup] Failed to read mute state, defaulting to muted:`, e.message);
+    return true;
+  }
+})();
+let dashboardTab = "chat"; // which tab the user is viewing: chat, tracker, cli
+let lastChatTime = 0; // timestamp of last chatWithBrain completion — suppresses auto-cycle echo
+// muteQueue removed — deferred sends now use pendingPrompt on findings
 let lastSentMessage = "";
 let lastSendFailed = false;
-let sendsPending = 0;
+let sendsPending = 0;  // how many sends haven't been acknowledged yet
 let sendsDelivered = 0;
 let sendsIgnored = 0;
 let loopTimer = null;
 const GUIDANCE_FILE = path.join(AUTOPILOT_DIR, "guidance.txt");
 let userGuidance = "";
 try { userGuidance = fs.readFileSync(GUIDANCE_FILE, "utf8").trim(); } catch {}
+// goals.json mission is source of truth — override guidance.txt
 if (goalsData.mission) userGuidance = goalsData.mission;
 const ACTIVE_PROJECTS_FILE = path.join(AUTOPILOT_DIR, "active-projects.json");
 let activeProjects = [];
 try { activeProjects = JSON.parse(fs.readFileSync(ACTIVE_PROJECTS_FILE, "utf8")); } catch {}
-
-// Discover all git projects in the user's CWD
+// Discover all git projects in the user's working directory
 function discoverProjects() {
   try {
     return fs.readdirSync(USER_CWD)
@@ -1022,12 +1091,15 @@ function discoverProjects() {
 const allProjects = discoverProjects();
 const startTime = Date.now();
 
+// Cycle history — last 20 brain cycles (5 shown in detail, 20 in sparkline)
 let cycleHistory = [];
 
+// Sent message history for dedup (persisted to disk)
 const SENT_HISTORY_FILE = path.join(AUTOPILOT_DIR, "sent-history.json");
 let sentHistory = [];
 try { sentHistory = JSON.parse(fs.readFileSync(SENT_HISTORY_FILE, "utf8")); } catch {}
 
+// Suggested prompt history for dedup (separate from sends)
 let suggestedHistory = [];
 
 function wordSet(s) {
@@ -1057,12 +1129,15 @@ function isSuggestionDuplicate(prompt) {
   return false;
 }
 
-// Brain session tracking
+// Brain session tracking — separate sessions for chat vs auto-cycles
+// Chat session: truly persistent — survives restarts, loaded from disk
+// Cycle session: ephemeral, rotates independently
 const SESSION_FILE = path.join(AUTOPILOT_DIR, "brain-sessions.json");
 let chatSessionId = null;
 let chatContextTokens = 0;
 let cycleSessionId = null;
 let cycleContextTokens = 0;
+// Load persisted sessions
 try {
   const sessions = JSON.parse(fs.readFileSync(SESSION_FILE, "utf8"));
   chatSessionId = sessions.chatSessionId || null;
@@ -1071,24 +1146,27 @@ try {
 function saveSessions() {
   try { atomicWriteSync(SESSION_FILE, JSON.stringify({ chatSessionId, cycleSessionId }, null, 2)); } catch {}
 }
+// Legacy alias used by callBrain — will be set per-call
 let brainSessionId = null;
 let brainContextTokens = 0;
-let lastSentThreadSummary = null;
+let lastSentThreadSummary = null; // Delta tracking — avoid resending unchanged context
 let lastSentProjectCtx = null;
-const CONTEXT_ROTATION_THRESHOLD = 190000;
+const CONTEXT_ROTATION_THRESHOLD = 190000; // Rotate at 190K — maximize session memory
 
+// Chat log for dashboard — persisted to disk for continuity
 const CHAT_LOG_FILE = path.join(AUTOPILOT_DIR, "chat-log.json");
 const CHAT_SUMMARY_FILE = path.join(AUTOPILOT_DIR, "chat-summary.md");
 let chatLog = [];
 let chatSummary = "";
 try {
   const saved = JSON.parse(fs.readFileSync(CHAT_LOG_FILE, "utf8"));
-  if (Array.isArray(saved)) chatLog = saved.slice(-200);
+  if (Array.isArray(saved)) chatLog = saved.slice(-200); // Keep last 200
 } catch {}
 try { chatSummary = fs.readFileSync(CHAT_SUMMARY_FILE, "utf8").trim(); } catch {}
 function saveChatLog() {
   try { atomicWriteSync(CHAT_LOG_FILE, JSON.stringify(chatLog.slice(-200), null, 2)); } catch {}
 }
+// Build a conversation summary from recent chat for session continuity
 function buildChatSummary() {
   const convos = chatLog.filter(m => m.role === "user" || m.role === "brain");
   if (convos.length === 0) return "";
@@ -1101,11 +1179,11 @@ function buildChatSummary() {
 
 let settings = { interval: 180 };
 
-// ─── CLI Pilot (tmux integration) ────────────────────────────────────────
+// ─── CLI Pilot (v1 integration) ────────────────────────────────────────────
 const CLI_SESSION = process.env.CLI_SESSION || "claude-auto";
 let cliQueue = [];
 let cliHistory = [];
-let cliStatus = "disconnected";
+let cliStatus = "disconnected"; // disconnected, idle, working
 let cliAutoMode = true;
 let cliLastScreen = "";
 let cliAutoSendPending = false;
@@ -1184,15 +1262,17 @@ function cliHandleAction(msg) {
   broadcastState();
 }
 
+// Post-send verification: if Claude never starts working, re-queue the item
 function cliVerifySend(item) {
   let checks = 0;
   const iv = setInterval(() => {
     checks++;
     const screen = cliCapturePane();
-    if (!screen || !cliIsIdle(screen)) { clearInterval(iv); return; }
-    if (checks >= 16) {
+    if (!screen || !cliIsIdle(screen)) { clearInterval(iv); return; } // working or disconnected — good
+    if (checks >= 16) { // 8 seconds (16 * 500ms) still idle — re-queue
       clearInterval(iv);
       cliQueue.unshift(item);
+      // Remove from history since it didn't actually work
       const idx = cliHistory.findLastIndex(h => h.text === item.text);
       if (idx !== -1) cliHistory.splice(idx, 1);
       cliStatus = "idle";
@@ -1201,7 +1281,7 @@ function cliVerifySend(item) {
   }, 500);
 }
 
-// CLI polling loop
+// CLI polling loop — check tmux every 2s
 setInterval(() => {
   const screen = cliCapturePane();
   if (!screen) {
@@ -1211,6 +1291,7 @@ setInterval(() => {
     }
     return;
   }
+  // Broadcast terminal content if changed
   if (screen !== cliLastScreen) {
     cliLastScreen = screen;
     broadcast({ type: "cli_terminal", content: screen });
@@ -1249,12 +1330,14 @@ setInterval(() => {
     broadcastState();
   }
 }, 2000);
+// ─── End CLI Pilot ─────────────────────────────────────────────────────────
 
 function addChat(role, text, extra) {
   const entry = { role, text, time: new Date().toLocaleTimeString(), ts: Date.now(), ...extra };
   chatLog.push(entry);
   if (chatLog.length > 500) chatLog.shift();
   broadcast({ type: "chat", entry });
+  // Persist user/brain messages (skip noisy system/sent/error for disk)
   if (role === "user" || role === "brain") saveChatLog();
 }
 
@@ -1265,6 +1348,7 @@ function broadcast(data) {
   }
 }
 
+// Update a finding card's status badge in-place (no new chat message)
 function broadcastFindingUpdate(id, status, extra) {
   broadcast({ type: "findingUpdate", id, status, ...extra });
 }
@@ -1332,6 +1416,7 @@ async function takeScreenshot() {
       ? `screencapture -x -t png -l${wid} "${SCREENSHOT_PATH}"`
       : `screencapture -x -t png "${SCREENSHOT_PATH}"`;
 
+    const SYSTEM_NODE = "/opt/homebrew/bin/node";
     const isElectron = !!process.versions.electron;
     if (isElectron && fs.existsSync(SYSTEM_NODE)) {
       await execAsync(`${SYSTEM_NODE} -e "require('child_process').execSync('${cmd}', {timeout: 5000})"`, { timeout: 8000 });
@@ -1352,11 +1437,20 @@ async function takeScreenshot() {
   }
 }
 
+// Quick idle check via screenshot hash — requires 2 consecutive changes to declare busy
+// (debounces cursor blinks, clock ticks, and minor UI updates)
 let lastScreenshotHash = null;
 let consecutiveChanges = 0;
 
 async function isDesktopIdle(screenshotBuf) {
-  if (lastScreenshotMode === "full screen") return true;
+  // If we couldn't capture the Claude window specifically, we can't reliably
+  // detect idle state — the bottom 200px would be wallpaper, not Claude's input area.
+  // Fall back to "assume idle" and let dedup/cooldown guards prevent spam.
+  if (lastScreenshotMode === "full screen") {
+    return true;
+  }
+
+  // Crop to bottom 200px (input area) to ignore clock/menu bar changes
   let hashBuf = screenshotBuf;
   try {
     const meta = await sharp(screenshotBuf).metadata();
@@ -1365,45 +1459,60 @@ async function isDesktopIdle(screenshotBuf) {
     hashBuf = await sharp(screenshotBuf)
       .extract({ left: 0, top, width: meta.width, height: cropHeight })
       .toBuffer();
-  } catch {}
+  } catch (e) {
+    // Fall back to full screenshot if crop fails
+  }
+
   const hash = crypto.createHash("md5").update(hashBuf).digest("hex");
+
   if (!lastScreenshotHash) {
     lastScreenshotHash = hash;
     return true;
   }
+
   const changed = hash !== lastScreenshotHash;
   lastScreenshotHash = hash;
+
   if (!changed) {
     consecutiveChanges = 0;
     return true;
   }
+
   consecutiveChanges++;
+  // Only declare busy after 2+ consecutive changes (streaming produces continuous changes)
   if (consecutiveChanges >= 2) {
     console.log(`Idle check: ${consecutiveChanges} consecutive changes — busy`);
     return false;
   }
-  return true;
+
+  return true; // Single change — likely cursor blink or minor update
 }
 
 let lastSendTime = 0;
-const SEND_COOLDOWN_MS = 60000;
-let lastExactSendText = "";
+const SEND_COOLDOWN_MS = 60000; // Don't send within 60s of last send
+let lastExactSendText = ""; // Exact-match dedup — blocks identical resends for 5 min
 let lastExactSendTime = 0;
+// pendingSend removed — deferred sends now live on findings as pendingPrompt
 
 async function sendToApp(message, findingCtx) {
   try {
+    // Mute mode is now handled at the pipeline level (before sendToApp is called)
+    // This is a safety fallback — pipeline should never call sendToApp while muted
     if (muteMode) {
-      console.log("[sendToApp] Called while muted — skipping.");
+      console.log("[sendToApp] Called while muted — pipeline should handle this. Skipping.");
       return false;
     }
+    // Exact-match dedup: block identical messages within 5 minutes
     if (message === lastExactSendText && Date.now() - lastExactSendTime < 300000) {
       console.log("[send] Blocked exact duplicate");
       return false;
     }
+    // Similarity dedup: block similar messages
     if (isDuplicate(message)) {
       console.log("[send] Blocked similar duplicate: " + message.slice(0, 60));
       return false;
     }
+    // Cooldown: skip send if too soon — next cycle will retry
     const timeSinceLastSend = Date.now() - lastSendTime;
     if (timeSinceLastSend < SEND_COOLDOWN_MS) {
       console.log(`[send] Cooldown — ${Math.ceil((SEND_COOLDOWN_MS - timeSinceLastSend) / 1000)}s remaining`);
@@ -1412,8 +1521,10 @@ async function sendToApp(message, findingCtx) {
 
     const prefixed = "autopilot: " + message;
     await new Promise((resolve, reject) => {
+      const SYSTEM_NODE = "/opt/homebrew/bin/node";
       const isElectron = !!process.versions.electron;
       if (isElectron && fs.existsSync(SYSTEM_NODE)) {
+        // Write a temp script to avoid shell quoting issues with arbitrary message text
         const tmpScript = "/tmp/autopilot-share/send-cmd.js";
         fs.writeFileSync(tmpScript, `require("child_process").execFileSync("python3", [${JSON.stringify(SEND_SCRIPT)}, ${JSON.stringify(prefixed)}], {timeout: 15000});`);
         execFile(SYSTEM_NODE, [tmpScript], { timeout: 20000 }, (err, stdout, stderr) => {
@@ -1436,10 +1547,14 @@ async function sendToApp(message, findingCtx) {
     sentHistory.unshift(message);
     if (sentHistory.length > 10) sentHistory.pop();
     try { atomicWriteSync(SENT_HISTORY_FILE, JSON.stringify(sentHistory, null, 2)); } catch {}
+    // Update card badge: sending → sent
     if (findingCtx) {
       broadcastFindingUpdate(findingCtx.id, "sent");
     }
 
+    // Capture post-send screenshot — if UI unchanged, message may have been
+    // intercepted (e.g. user's computer use grabbed focus). Reset finding to
+    // retry on next cycle.
     setTimeout(async () => {
       try {
         const preSendHash = lastScreenshotHash;
@@ -1450,12 +1565,14 @@ async function sendToApp(message, findingCtx) {
           const delivered = preSendHash && postHash !== preSendHash;
           console.log(`[send] Post-send: UI ${delivered ? "changed" : "unchanged"}`);
           if (!delivered && findingCtx) {
+            // Message didn't land — reset to identified for retry
             reloadFindingsFromDisk();
             const f = findings.find(f => f.id === findingCtx.id);
             if (f && f.status === "sent") {
               f.status = "identified";
               f.pendingPrompt = f.sentPrompt || message;
               f.retryCount = (f.retryCount || 0) + 1;
+              // Give up after 3 retries
               if (f.retryCount > 3) {
                 f.status = "failed";
                 addChat("system", `Message failed after 3 retries: "${message.slice(0, 60)}..."`);
@@ -1479,7 +1596,7 @@ async function sendToApp(message, findingCtx) {
   }
 }
 
-// Gather live project context for the brain
+// Gather live project context for the brain (cached every 3rd cycle)
 let cachedProjectCtx = null;
 let lastProjectCtxCycle = 0;
 function gatherProjectContext() {
@@ -1488,6 +1605,7 @@ function gatherProjectContext() {
   }
   const ctx = {};
 
+  // Current working directory + last edited file — read from cached thread digest
   try {
     const digest = loadKnowledge().threadDigest;
     const sessions = Object.entries(digest.sessions || {})
@@ -1509,6 +1627,7 @@ function gatherProjectContext() {
             return fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, ".git"));
           } catch { return false; }
         });
+      // Pick the one with the most recent .git/HEAD mtime
       let best = null, bestMtime = 0;
       for (const d of subdirs) {
         try {
@@ -1519,11 +1638,12 @@ function gatherProjectContext() {
       }
       if (best) {
         ctx.cwd = path.join(ctx.cwd, best);
-        ctx.cwdResolved = true;
+        ctx.cwdResolved = true; // flag that we auto-detected the project
       }
     } catch {}
   }
 
+  // Recent git status and log from the active project
   if (ctx.cwd && fs.existsSync(ctx.cwd) && fs.existsSync(path.join(ctx.cwd, ".git"))) {
     try {
       ctx.gitStatus = execFileSync("git", ["status", "--short"], { cwd: ctx.cwd, timeout: 3000, encoding: "utf8" }).trim().slice(0, 500);
@@ -1534,12 +1654,14 @@ function gatherProjectContext() {
     try {
       ctx.gitDiff = execFileSync("git", ["diff", "--stat", "HEAD"], { cwd: ctx.cwd, timeout: 3000, encoding: "utf8" }).trim().slice(0, 500);
     } catch {}
+    // Get file tree (top-level only, skip node_modules etc)
     try {
       const tree = execFileSync("find", [".", "-maxdepth", "2", "-not", "-path", "*/node_modules/*", "-not", "-path", "*/.git/*", "-not", "-path", "*/dist/*", "-not", "-path", "*/.next/*"], { cwd: ctx.cwd, timeout: 3000, encoding: "utf8" });
       ctx.fileTree = tree.split("\n").slice(0, 60).join("\n").trim();
     } catch {}
   }
 
+  // Check for recent errors in common log locations
   try {
     const errLog = execSync(`tail -20 /tmp/autopilot-share/*.log 2>/dev/null || true`, { timeout: 2000 }).toString().trim();
     if (errLog) ctx.recentErrors = errLog.slice(0, 400);
@@ -1550,40 +1672,54 @@ function gatherProjectContext() {
   return ctx;
 }
 
+// Build prompt for chat — lightweight, conversational, includes history
 function buildChatPrompt(userMessage) {
   const parts = [];
   const isResume = !!chatSessionId;
 
+  // On first message in a new chat session, give full context
   if (!isResume) {
     parts.push(`Screenshot of Claude Desktop is at ${SCREENSHOT_PATH} — read it to see the current state.`);
+
+    // Autopilot memory
     try {
       const mem = fs.readFileSync(AUTOPILOT_MEMORY_FILE, "utf8").trim();
       if (mem) parts.push(`## YOUR MEMORY\n${mem}`);
     } catch {}
+
+    // Brief project context
     const projectCtx = gatherProjectContext();
     if (projectCtx.cwd) parts.push(`Working directory: ${projectCtx.cwd}`);
     if (projectCtx.gitLog) parts.push(`Recent commits:\n${projectCtx.gitLog}`);
-    if (userGuidance) parts.push(`USER MISSION: "${userGuidance}"`);
+
+    if (userGuidance) parts.push(`USER MISSION: "${userGuidance}" — Manifest the user's implicit goals, extend them into actionable steps, and drive progress toward this mission.`);
+
+    // Carry forward conversation summary from previous session
     if (chatSummary) parts.push(chatSummary);
   }
 
+  // Conversation history — the brain sees what was said before
   const recentChat = chatLog
     .filter(m => m.role === "user" || m.role === "brain")
-    .slice(-20)
+    .slice(-20) // last 20 exchanges
     .map(m => `[${m.role === "user" ? "USER" : "BRAIN"} ${m.time}] ${m.text.slice(0, 500)}`)
     .join("\n");
 
   if (recentChat && isResume) {
+    // On resume, history is already in the session — just include recent for reference
     parts.push(`Recent conversation (for reference):\n${recentChat}`);
   } else if (recentChat) {
     parts.push(`## Conversation History\n${recentChat}`);
   }
 
+  // The actual user message
   parts.push(`USER: ${userMessage}\n\nRespond naturally. Use tools if needed. End with the JSON block.`);
 
   return parts.join("\n\n");
 }
 
+// Build prompt for auto-cycles — full context dump for investigation
+// Build goal hierarchy section for brain prompt
 function buildGoalSection() {
   if (!goalsData.mission && Object.keys(goalsData.projects).length === 0) return "";
 
@@ -1592,18 +1728,25 @@ function buildGoalSection() {
     section += `**Mission:** ${goalsData.mission}\n\n`;
   }
 
+  // Show goals grouped by project, with their linked insights
   for (const [projectName, project] of Object.entries(goalsData.projects)) {
     const goals = (project.goals || []).filter(g => g.status === "active");
     if (goals.length === 0) continue;
+
+    // Only show projects the brain cares about
     if (activeProjects.length > 0 && !activeProjects.some(p => projectName.includes(p))) continue;
+
     section += `### ${projectName}${project.description ? ` — ${project.description}` : ""}\n`;
+
     for (const goal of goals.sort((a, b) => (a.priority || 99) - (b.priority || 99))) {
       const insightIds = goal.insights || [];
       const linkedInsights = findings.filter(f => insightIds.includes(f.id) && f.status !== "ignored");
       const implemented = linkedInsights.filter(f => f.status === "implemented").length;
       const active = linkedInsights.filter(f => ["identified", "sent", "received"].includes(f.status)).length;
+
       section += `\n**Goal:** ${goal.title} (${goal.id})\n`;
       section += `  Source: ${goal.source} | Priority: ${goal.priority} | Insights: ${implemented} done, ${active} active\n`;
+
       if (linkedInsights.length > 0) {
         for (const insight of linkedInsights.slice(0, 8)) {
           section += `  - [${insight.status}] ${insight.title} (${insight.id})\n`;
@@ -1616,10 +1759,11 @@ function buildGoalSection() {
     section += "\n";
   }
 
+  // Show unlinked insights count
   const unlinked = goalsData.unlinked_insights || [];
   const unlinkedActive = findings.filter(f => unlinked.includes(f.id) && f.status !== "ignored");
   if (unlinkedActive.length > 0) {
-    section += `**Unlinked insights (${unlinkedActive.length}):** These need a goal.\n`;
+    section += `**Unlinked insights (${unlinkedActive.length}):** These need a goal. Either link them to an existing goal via goalId, or emit a newGoal.\n`;
     for (const insight of unlinkedActive.slice(0, 5)) {
       section += `  - [${insight.status}] ${insight.title} (${insight.id})\n`;
     }
@@ -1630,28 +1774,33 @@ function buildGoalSection() {
 
 function buildBrainPrompt(userMessage) {
   const parts = [];
+
   parts.push(`Screenshot of Claude Desktop is at ${SCREENSHOT_PATH} — read it to see the current state.`);
+
   const isResume = !!cycleSessionId;
 
+  // User context — skip on resume unless changed or every 5th cycle
   if (userContext && (!isResume || cycleCount <= 1 || userMessage || cycleCount % 5 === 0)) {
     parts.push(`User context from memory files:\n${userContext}`);
   } else if (userContext && isResume) {
     parts.push(`[User context unchanged — see previous turn]`);
   }
 
+  // Live project context — always fresh on new session, delta on resume
   const projectCtx = gatherProjectContext();
   if (Object.keys(projectCtx).length > 0) {
     let projectSection = "## Live Project Context\n";
     if (projectCtx.cwd) projectSection += `Working directory: ${projectCtx.cwd}\n`;
     if (projectCtx.lastEditedFile) {
       projectSection += `Last edited file: ${projectCtx.lastEditedFile}\n`;
+      // Pre-load active file content to save the brain a tool roundtrip
       try {
         const fullPath = path.isAbsolute(projectCtx.lastEditedFile)
           ? projectCtx.lastEditedFile
           : path.join(projectCtx.cwd || "", projectCtx.lastEditedFile);
         if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
           const size = fs.statSync(fullPath).size;
-          if (size < 30000) {
+          if (size < 30000) { // Only pre-load files under 30KB
             const content = fs.readFileSync(fullPath, "utf8");
             projectSection += `\nActive file contents (${path.basename(fullPath)}):\n\`\`\`\n${content.slice(0, 25000)}\n\`\`\`\n`;
           }
@@ -1672,19 +1821,22 @@ function buildBrainPrompt(userMessage) {
     }
   }
 
+  // Autopilot memory — inject on new session and every 5th cycle
   if (!isResume || cycleCount % 5 === 0) {
     try {
       const mem = fs.readFileSync(AUTOPILOT_MEMORY_FILE, "utf8").trim();
       if (mem) {
-        parts.push(`## YOUR MEMORY (autopilot-memory.md) — READ THIS CAREFULLY\n${mem}`);
+        parts.push(`## YOUR MEMORY (autopilot-memory.md) — READ THIS CAREFULLY\nThis is YOUR persistent memory. Decisions recorded here are FINAL. Do not question, revisit, or re-propose anything marked as settled.\n\n${mem}`);
       }
     } catch {}
   }
 
+  // Sent history for dedup awareness
   if (sentHistory.length > 0) {
     parts.push(`Messages already sent to Claude Desktop (avoid repeating):\n${sentHistory.slice(0, 5).map((m, i) => `${i + 1}. "${m.slice(0, 120)}"`).join("\n")}`);
   }
 
+  // Thread digest summary — delta on resume
   const threadSummary = buildThreadSummary();
   if (threadSummary) {
     if (isResume && lastSentThreadSummary === threadSummary) {
@@ -1695,40 +1847,53 @@ function buildBrainPrompt(userMessage) {
     }
   }
 
-  if (userGuidance) parts.push(`USER MISSION: "${userGuidance}"`);
+  if (userGuidance) parts.push(`USER MISSION: "${userGuidance}" — Manifest the user's implicit goals, extend them into actionable steps, and drive progress toward this mission.`);
   if (activeProjects.length > 0) {
-    parts.push(`ACTIVE PROJECTS: ${activeProjects.join(", ")}\nOnly investigate and file findings for these projects.`);
+    parts.push(`⚠️ ACTIVE PROJECTS: ${activeProjects.join(", ")}
+The user has EXPLICITLY selected these projects. You MUST NOT investigate, file findings about, or suggest prompts for ANY other project. If Claude Desktop is working on a different project, observe but do not act on it. Findings about non-selected projects will be rejected by the server.`);
   } else {
-    parts.push(`NO PROJECTS SELECTED — observe-all mode. Investigate freely but the server will NOT send messages.`);
+    parts.push(`ℹ️ NO PROJECTS SELECTED — you are in OBSERVE-ALL mode. Investigate any project freely, file findings about anything interesting, but the server will NOT send messages to Claude Desktop. Your findings are stored for the user to review on the dashboard.`);
   }
+  // Dashboard tab context — tells brain what the user is focused on
+  if (dashboardTab === "tracker") {
+    parts.push(`Dashboard: user is viewing the TRACKER tab (findings/insights). Prioritize finding quality and actionability.`);
+  } else if (dashboardTab === "cli") {
+    parts.push(`Dashboard: user is viewing the CLI tab.`);
+  }
+  // chat tab is default, no need to mention it
+
   if (lastSentMessage) {
     if (lastSendFailed) {
-      parts.push(`LAST SEND FAILED — "${lastSentMessage}" did NOT reach Claude Desktop.`);
+      parts.push(`⚠️ LAST SEND FAILED — your message "${lastSentMessage}" did NOT reach Claude Desktop. Check the screenshot to confirm. Do not build on a message that wasn't delivered.`);
     } else {
-      parts.push(`Last message sent to Claude Desktop: "${lastSentMessage}"`);
+      parts.push(`Last message you sent to Claude Desktop: "${lastSentMessage}" — check the screenshot: did Claude Desktop respond to it, or was it ignored? Report this in your reply.`);
     }
   }
   if (sendsPending > 0 || sendsDelivered > 0 || sendsIgnored > 0) {
-    parts.push(`Send stats: ${sendsDelivered} delivered, ${sendsIgnored} ignored, ${sendsPending} pending.`);
+    parts.push(`Send stats this session: ${sendsDelivered} delivered, ${sendsIgnored} ignored, ${sendsPending} pending verification.`);
   }
 
+  // Include recent cycle topics so brain knows what it already investigated
   const recentTopics = cycleHistory
     .filter(c => c.topic && c.topic.length > 10)
     .slice(0, 10)
     .map((c, i) => `  ${c.cycle}. [${c.time}] ${c.topic}`)
     .join("\n");
   if (recentTopics) {
-    parts.push(`Topics already covered (don't repeat):\n${recentTopics}`);
+    parts.push(`Topics you already covered (don't repeat):\n${recentTopics}`);
   }
 
+  // Files already investigated — helps brain explore new ground after context rotation
   if (filesInvestigated.length > 0) {
-    parts.push(`Files already investigated (${filesInvestigated.length} total): ${filesInvestigated.slice(-15).map(f => path.basename(f)).join(", ")}`);
+    parts.push(`Files already investigated (${filesInvestigated.length} total, explore new ones): ${filesInvestigated.slice(-15).map(f => path.basename(f)).join(", ")}`);
   }
 
+  // Goal hierarchy — Mission → Project → Goal → Insights
   loadGoals();
   const goalSection = buildGoalSection();
   if (goalSection) parts.push(goalSection);
 
+  // Active insights (not grouped under goals — legacy flat view for lifecycle tracking)
   const activeFindings = findings.filter(f => f.status !== "ignored");
   if (activeFindings.length) {
     const findingLines = activeFindings.map(f => {
@@ -1738,27 +1903,67 @@ function buildBrainPrompt(userMessage) {
       if (f.status === "sent" && f.sentPrompt) line += ` — awaiting receipt`;
       return line;
     }).join("\n");
-    parts.push(`## Insight Tracker\n${findingLines}\n\n### Lifecycle:\nidentified → sent → received → implemented/failed/ignored\nYOU promote "received" → "implemented" or "failed" via statusUpdates[].`);
+    parts.push(`## Insight Tracker (shared with server)
+${findingLines}
+
+### Lifecycle rules — WHO does WHAT:
+| Transition | Who | Trigger |
+|---|---|---|
+| → identified | Brain | You create it in findings[] with goalId |
+| identified → sent | Server | Server sends the pendingPrompt to Claude Desktop |
+| sent → received | Server | Auto when conversation detected active |
+| received → implemented | **Brain (YOU)** | You see evidence: screenshot shows fix, git commit, code confirms |
+| received → failed | **Brain (YOU)** | You see the fix didn't work or was wrong |
+| sent/received → ignored | Server | Auto after 1 hour if no resolution |
+| any → ignored | User | User dismisses from dashboard |
+
+YOUR JOB: Promote "received" insights to "implemented" or "failed" via statusUpdates[]. Always include goalId when creating new insights. Close the loop — don't leave things at "received".`);
   }
 
   if (userMessage) {
-    parts.push(`The dashboard user says: "${userMessage}"\n\nRespond to them. End with the JSON block.`);
+    parts.push(`The dashboard user says: "${userMessage}"\n\nRespond to them. Use your tools if you need to look anything up, check files, run commands, etc. Then end with the JSON block.`);
   } else {
-    parts.push(`Auto-cycle #${cycleCount}. Read the screenshot first.\n\nIf empty conversation: compose a contextual resume prompt.\nIf active: pick ONE approach — ask a question, find a UX gap, or connect to a goal.\n\nEnd with the JSON block.`);
+    parts.push(`This is auto-cycle #${cycleCount}. No user message — YOUR time to think.
+
+Read the screenshot first.
+
+## CRITICAL: Empty/New Conversation Detection
+If the screenshot shows an EMPTY or NEW Claude Desktop conversation (no messages, just the input field with a prompt placeholder), this is a "PICK UP WHERE LEFT OFF" moment. Do this:
+1. Check the thread digest for the most recent session on the active project(s)
+2. Check git log and git status for recent changes and uncommitted work
+3. Compose a contextual resume prompt as your suggestedPrompt, like:
+   "Continuing work on [project]. Last session you were [what they were doing from thread digest lastAssistantText/userMessages]. Recent commits: [last 2-3 commits]. [Uncommitted changes if any]. Pick up from here — [specific next step based on context]."
+4. This is your HIGHEST PRIORITY action — send the resume prompt immediately. Don't investigate code or file other findings first.
+
+## If the conversation is ACTIVE (has messages):
+Pick ONE approach and go deep:
+
+1. **ASK CLAUDE DESKTOP A QUESTION** — It has the most context. Ask what it's working on, whether a fix worked, what's next. Use the "question" field in your JSON.
+2. **THINK LIKE A USER** — Look at the active project. If you were using this app right now, what would feel incomplete? What page is missing details? What flow doesn't make sense? Trace the actual user experience.
+3. **CONNECT TO A GOAL** — Check the Mission → Goals hierarchy above. What's the gap between where the project is and what the user wants? Link your insights to a goal via goalId. If you spot a new user goal, emit it in newGoals[].
+4. **FIND A REAL UX GAP** — Not a code pattern issue. An actual "I clicked this and expected X but got Y" problem. Or a page that shows 3 fields when it should show 10.
+5. **PROPOSE AN EXPERIENCE IMPROVEMENT** — Something that makes the app better for its user. Not cleaner code — better product.
+
+USE YOUR TOOLS — read files, run the app's commands, check git. But focus on WHAT THE APP DOES, not just how the code looks.
+
+End with the JSON block.`);
   }
 
   return parts.join("\n\n");
 }
 
-// Call the brain via forked worker process
+// Call the brain via forked worker process (crash-isolated from server)
 const BRAIN_WORKER_PATH = path.join(APP_DIR, "brain-worker.js");
-const BRAIN_TIMEOUT_MS = 300000;
+const BRAIN_TIMEOUT_MS = 300000; // 5 minutes
 
 let activeCycleWorker = null;
+
+let cycleAborted = false;
 
 function abortCycle(reason) {
   if (activeCycleWorker) {
     console.log(`[cycle] Aborting cycle brain: ${reason}`);
+    cycleAborted = true;
     activeCycleWorker.kill("SIGKILL");
     activeCycleWorker = null;
   }
@@ -1766,6 +1971,7 @@ function abortCycle(reason) {
 
 async function callBrain(prompt, sessionType = "cycle") {
   const startMs = Date.now();
+  // Use the right session based on type
   const useSessionId = sessionType === "chat" ? chatSessionId : cycleSessionId;
 
   return new Promise((resolve, reject) => {
@@ -1778,6 +1984,7 @@ async function callBrain(prompt, sessionType = "cycle") {
       silent: true,
     });
 
+    // Track cycle worker for preemption
     if (sessionType === "cycle") activeCycleWorker = worker;
 
     let finalText = "";
@@ -1795,21 +2002,24 @@ async function callBrain(prompt, sessionType = "cycle") {
 
     worker.on("message", (msg) => {
       if (msg.type === "event") {
+        // Forward streaming events to dashboard
         broadcast({ type: "brainEvent", ...msg });
         if (msg.event === "text_delta") finalText = msg.accumulated || finalText;
       } else if (msg.type === "result") {
         usage = msg.usage;
         numTurns = msg.numTurns;
         const returnedId = msg.sessionId;
+        // Track context window usage for session rotation
         const u = msg.usage || {};
         const tokens = (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.input_tokens || 0);
+        // Update the correct session
         if (sessionType === "chat") {
           chatSessionId = returnedId || chatSessionId;
           chatContextTokens = tokens;
           if (chatContextTokens > CONTEXT_ROTATION_THRESHOLD) {
             chatSummary = buildChatSummary();
             try { fs.writeFileSync(CHAT_SUMMARY_FILE, chatSummary); } catch {}
-            addChat("system", `Chat context at ${Math.round(chatContextTokens/1000)}K — rotating.`);
+            addChat("system", `Chat context at ${Math.round(chatContextTokens/1000)}K — rotating chat session (summary saved).`);
             chatSessionId = null;
             chatContextTokens = 0;
           }
@@ -1817,7 +2027,7 @@ async function callBrain(prompt, sessionType = "cycle") {
           cycleSessionId = returnedId || cycleSessionId;
           cycleContextTokens = tokens;
           if (cycleContextTokens > CONTEXT_ROTATION_THRESHOLD) {
-            addChat("system", `Cycle context at ${Math.round(cycleContextTokens/1000)}K — rotating.`);
+            addChat("system", `Cycle context at ${Math.round(cycleContextTokens/1000)}K — rotating cycle session.`);
             cycleSessionId = null;
             cycleContextTokens = 0;
             lastSentThreadSummary = null;
@@ -1825,6 +2035,7 @@ async function callBrain(prompt, sessionType = "cycle") {
           }
         }
         saveSessions();
+        // Legacy aliases for backward compat
         brainSessionId = sessionType === "chat" ? chatSessionId : cycleSessionId;
         brainContextTokens = tokens;
         broadcast({
@@ -1833,6 +2044,7 @@ async function callBrain(prompt, sessionType = "cycle") {
         });
       } else if (msg.type === "done") {
         finalText = msg.text || finalText;
+        // Worker finished — parse and resolve
         if (!resolved) {
           resolved = true;
           clearTimeout(timeout);
@@ -1857,6 +2069,13 @@ async function callBrain(prompt, sessionType = "cycle") {
       clearTimeout(timeout);
       if (!resolved) {
         resolved = true;
+        // Gracefully handle aborted cycles (SIGKILL from abortCycle)
+        if (cycleAborted && sessionType === "cycle") {
+          cycleAborted = false;
+          resolve({ reply: "", findings: [], filesInvestigated: [], _meta: { aborted: true } });
+          return;
+        }
+        cycleAborted = false;
         if (finalText.trim()) {
           try {
             const result = parseBrainOutput(finalText, { usage, duration: Date.now() - startMs, numTurns, contextTokens: brainContextTokens });
@@ -1874,6 +2093,7 @@ async function callBrain(prompt, sessionType = "cycle") {
       console.error("[brain-worker stderr]", data.toString().slice(0, 200));
     });
 
+    // Send the query to the worker
     worker.send({
       type: "run",
       prompt,
@@ -1889,6 +2109,7 @@ function parseBrainOutput(finalText, meta) {
   if (!finalText.trim()) {
     throw new Error("No output from brain");
   }
+
   function tryParseJson(str) {
     try {
       return JSON.parse(str);
@@ -1899,6 +2120,7 @@ function parseBrainOutput(finalText, meta) {
       try { return JSON.parse(fixed); } catch { return null; }
     }
   }
+
   const jsonBlocks = finalText.match(/```json\s*([\s\S]*?)```/g);
   if (jsonBlocks) {
     const lastBlock = jsonBlocks[jsonBlocks.length - 1];
@@ -1918,12 +2140,13 @@ function parseBrainOutput(finalText, meta) {
   throw new Error("Failed to parse brain output — no reply field found");
 }
 
+// Safety: reset state if stuck in CHECKING for too long
 let thinkingTimer = null;
 function startThinkingGuard() {
   clearThinkingGuard();
   thinkingTimer = setTimeout(() => {
     if (state === "CHECKING") {
-      addChat("system", "Cycle timed out — resetting.");
+      addChat("system", "Cycle timed out — resetting status.");
       broadcast({ type: "brainDone" });
       state = "IDLE";
       broadcastState();
@@ -1935,16 +2158,17 @@ function startThinkingGuard() {
       broadcastState();
       drainPendingChat();
     }
-  }, 310000);
+  }, 310000); // slightly longer than worker timeout (300s)
 }
 function clearThinkingGuard() {
   if (thinkingTimer) { clearTimeout(thinkingTimer); thinkingTimer = null; }
 }
 
+// User chats with the brain — runs independently of auto-cycles
 let pendingChatQueue = [];
 let chatBusy = false;
-
 async function chatWithBrain(userMessage) {
+  // Intercept "goal: ..." messages to create goals directly
   const goalMatch = userMessage && userMessage.match(/^goal:\s*(.+)/i);
   if (goalMatch) {
     const goalText = goalMatch[1].trim();
@@ -1954,7 +2178,7 @@ async function chatWithBrain(userMessage) {
       project = goalText.slice(0, slashIdx).trim();
       title = goalText.slice(slashIdx + 1).trim();
     } else {
-      project = activeProjects[0] || "general";
+      project = activeProjects[0] || "default";
       title = goalText;
     }
     loadGoals();
@@ -1974,6 +2198,7 @@ async function chatWithBrain(userMessage) {
     drainPendingChat();
     return;
   }
+  // Preempt auto-cycle if running — user chat takes priority
   if (state === "CHECKING" && activeCycleWorker) {
     abortCycle("user chat takes priority");
     state = "IDLE";
@@ -1991,16 +2216,23 @@ async function chatWithBrain(userMessage) {
   addChat("user", userMessage);
   broadcast({ type: "brainStart" });
 
+  // Take screenshot for context
   const buf = await takeScreenshot();
-  if (buf) fs.writeFileSync(SCREENSHOT_PATH, buf);
+  if (buf) {
+    fs.writeFileSync(SCREENSHOT_PATH, buf);
+  }
 
   try {
     const prompt = buildChatPrompt(userMessage);
     const result = await callBrain(prompt, "chat");
+
     addChat("brain", result.reply, { meta: result._meta });
     broadcast({ type: "brainDone" });
+
+    // Merge findings from user chat
     mergeFindings(result.findings, result.filesInvestigated);
 
+    // Process status updates from brain (sent → implemented, etc.)
     if (result.statusUpdates && result.statusUpdates.length) {
       for (const update of result.statusUpdates) {
         if (!update.id || !update.status) continue;
@@ -2014,6 +2246,7 @@ async function chatWithBrain(userMessage) {
       broadcastState();
     }
 
+    // Process new goals and goal updates from chat
     if (result.newGoals && result.newGoals.length) {
       for (const ng of result.newGoals) {
         if (!ng.title || !ng.project) continue;
@@ -2046,12 +2279,14 @@ async function chatWithBrain(userMessage) {
     }
 
     chatBusy = false;
+    lastChatTime = Date.now();
     broadcastState();
     drainPendingChat();
   } catch (e) {
-    addChat("error", "Brain error: " + e.message);
+    addChat("error", "Brain error: " + e.message + (e.stderr ? " | " + e.stderr.slice(0, 200) : ""));
     broadcast({ type: "brainDone" });
     chatBusy = false;
+    lastChatTime = Date.now();
     broadcastState();
     drainPendingChat();
   }
@@ -2064,6 +2299,7 @@ function drainPendingChat() {
   }
 }
 
+// Auto-cycle — brain checks on the conversation
 let continueQueue = 0;
 
 async function runCycle() {
@@ -2074,37 +2310,23 @@ async function runCycle() {
     return;
   }
 
+  // Fast path: if continue is queued, send it directly without brain
   if (continueQueue > 0) {
     continueQueue--;
     broadcastState();
+    console.log(`[cycle] Sending queued continue (${continueQueue} remaining)`);
     const ok = await sendToApp("continue");
-    if (!ok) continueQueue++;
+    if (!ok) {
+      continueQueue++; // Re-queue on failure (cooldown, etc.)
+      console.log("[cycle] Continue send failed — re-queued");
+    }
     scheduleNextCycle();
     return;
   }
 
   cycleCount++;
 
-  const now = Date.now();
-  const STALE_MS = 60 * 60 * 1000;
-  let lifecycleChanges = 0;
-  for (const f of findings) {
-    const age = f.sentAt ? now - new Date(f.sentAt).getTime() : Infinity;
-    if ((f.status === "sent" || f.status === "received") && age > STALE_MS) {
-      f.status = "ignored";
-      f.expiredAt = new Date().toISOString();
-      lifecycleChanges++;
-    }
-    if (f.status === "identified" && !f.pendingPrompt && !(f.messages?.some(m => m.status === "pending"))) {
-      const firstAge = f.firstSeen ? now - new Date(f.firstSeen).getTime() : 0;
-      if (firstAge > STALE_MS) {
-        f.status = "ignored";
-        f.expiredAt = new Date().toISOString();
-        lifecycleChanges++;
-      }
-    }
-  }
-  if (lifecycleChanges) { saveFindings(); console.log(`[cycle] Auto-expired ${lifecycleChanges} stale finding(s)`); }
+  // No auto-expire: findings persist until user dismisses or parks them
 
   state = "CHECKING";
   broadcastState();
@@ -2113,14 +2335,22 @@ async function runCycle() {
 
   const buf = await takeScreenshot();
   if (!buf) { clearThinkingGuard(); scheduleNextCycle(); return; }
+
   fs.writeFileSync(SCREENSHOT_PATH, buf);
 
+  // Pre-flight: skip cycle if Claude Desktop is busy (saves 30-60s of Opus compute)
   const idle = await isDesktopIdle(buf);
   if (!idle) {
     console.log("[cycle] Skipped — Claude Desktop busy");
     broadcast({ type: "brainDone" });
     clearThinkingGuard();
-    cycleHistory.unshift({ cycle: cycleCount, time: new Date().toLocaleTimeString(), status: "skipped", sent: false, topic: "Claude Desktop busy — skipped" });
+    cycleHistory.unshift({
+      cycle: cycleCount,
+      time: new Date().toLocaleTimeString(),
+      status: "skipped",
+      sent: false,
+      topic: "Claude Desktop busy — skipped",
+    });
     if (cycleHistory.length > 20) cycleHistory.pop();
     scheduleNextCycle();
     return;
@@ -2129,17 +2359,36 @@ async function runCycle() {
   try {
     const prompt = buildBrainPrompt(null);
     const result = await callBrain(prompt);
-    addChat("brain", result.reply, { auto: true, meta: result._meta });
-    broadcast({ type: "brainDone" });
 
-    if (result.lastSendResult && sendsPending > 0) {
-      sendsPending--;
-      if (result.lastSendResult === "delivered") sendsDelivered++;
-      else if (result.lastSendResult === "ignored") sendsIgnored++;
+    // Aborted cycles (preempted by user chat) — skip all processing
+    if (result._meta && result._meta.aborted) {
+      broadcast({ type: "brainDone" });
+      scheduleNextCycle();
+      return;
     }
 
+    // Suppress auto-cycle chat reply if user chatted recently (avoids echo/duplicate)
+    if (Date.now() - lastChatTime > 60000) {
+      addChat("brain", result.reply, { auto: true, meta: result._meta });
+    }
+    broadcast({ type: "brainDone" });
+
+    // Track send outcome reported by brain
+    if (result.lastSendResult && sendsPending > 0) {
+      sendsPending--;
+      if (result.lastSendResult === "delivered") {
+        sendsDelivered++;
+        console.log("[cycle] Brain confirmed: last send delivered");
+      } else if (result.lastSendResult === "ignored") {
+        sendsIgnored++;
+        console.log("[cycle] Brain reports: last send ignored");
+      }
+    }
+
+    // Merge findings and files from this cycle
     mergeFindings(result.findings, result.filesInvestigated);
 
+    // Process status updates from brain
     if (result.statusUpdates && result.statusUpdates.length) {
       for (const update of result.statusUpdates) {
         if (!update.id || !update.status) continue;
@@ -2153,38 +2402,48 @@ async function runCycle() {
       broadcastState();
     }
 
+    // Process new goals from brain
     if (result.newGoals && result.newGoals.length) {
       for (const ng of result.newGoals) {
         if (!ng.title || !ng.project) continue;
-        if (!goalsData.projects[ng.project]) goalsData.projects[ng.project] = { description: "", goals: [] };
+        if (!goalsData.projects[ng.project]) {
+          goalsData.projects[ng.project] = { description: "", goals: [] };
+        }
         const existing = goalsData.projects[ng.project].goals;
+        // Dedup by word overlap
         const isDup = existing.some(g => similarity(g.title, ng.title) > 0.5);
         if (!isDup && existing.length < 15) {
           existing.push({
             id: `goal-${ng.project}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             title: ng.title,
             source: ng.source || "brain",
-            priority: existing.length + 1,
+            priority: existing.length + 1, // brain goals = lowest priority
             status: "active",
             created: new Date().toISOString(),
             insights: [],
           });
+          console.log(`[goals] Brain created goal: "${ng.title}" for ${ng.project}`);
         }
       }
       saveGoals();
     }
 
+    // Process goal status updates from brain
     if (result.goalUpdates && result.goalUpdates.length) {
       for (const gu of result.goalUpdates) {
         if (!gu.id || !gu.status) continue;
         for (const project of Object.values(goalsData.projects)) {
           const goal = (project.goals || []).find(g => g.id === gu.id);
-          if (goal) goal.status = gu.status;
+          if (goal) {
+            goal.status = gu.status;
+            console.log(`[goals] Brain updated goal "${goal.title.slice(0, 40)}" → ${gu.status}`);
+          }
         }
       }
       saveGoals();
     }
 
+    // Store suggestedPrompt on the linked finding as both pendingPrompt and a message
     if (result.suggestedPrompt && result.suggestedFindingId) {
       const linked = findings.find(f => f.id === result.suggestedFindingId);
       if (linked && linked.status === "identified") {
@@ -2197,22 +2456,24 @@ async function runCycle() {
       }
     }
 
+    // Handle question — questions go through the pipeline as a special finding
     if (result.question && !isDuplicate(result.question)) {
       const qId = `question-${Date.now()}`;
-      const nowISO = new Date().toISOString();
+      const now = new Date().toISOString();
       const qFinding = {
         id: qId, type: "question", title: result.question.slice(0, 80),
         detail: result.question, project: activeProjects[0] || null,
         status: "identified", pendingPrompt: result.question,
-        firstSeen: nowISO, lastSeen: nowISO,
-        messages: [{ text: result.question, status: "pending", addedAt: nowISO }],
+        firstSeen: now, lastSeen: now,
+        messages: [{ text: result.question, status: "pending", addedAt: now }],
       };
       findings.push(qFinding);
       saveFindings();
-      addChat("finding", qFinding.title, { finding: { ...qFinding } });
+      // Don't addChat("finding") here — brain reply already covers the question
       broadcast({ type: "suggestedPrompt", prompt: result.question, title: "Question: " + result.question.slice(0, 50), findingId: qId });
     }
 
+    // Broadcast suggested prompt to dashboard
     if (result.suggestedPrompt && !isDuplicate(result.suggestedPrompt) && !isSuggestionDuplicate(result.suggestedPrompt)) {
       broadcast({ type: "suggestedPrompt", prompt: result.suggestedPrompt, title: result.suggestedTitle || null, findingId: result.suggestedFindingId || null });
       suggestedHistory.unshift(result.suggestedPrompt);
@@ -2221,6 +2482,8 @@ async function runCycle() {
 
     let sent = false;
     if (result.status === "active") {
+      console.log("[cycle] Conversation active — watching");
+      // Auto-promote sent → received: if Claude Desktop is active, it's likely working on what we sent
       let promoted = 0;
       for (const f of findings) {
         if (f.status === "sent") {
@@ -2230,82 +2493,128 @@ async function runCycle() {
           promoted++;
         }
       }
-      if (promoted) { saveFindings(); }
+      if (promoted) { saveFindings(); console.log(`[cycle] Auto-promoted ${promoted} sent → received (conversation active)`); }
     }
 
-    // Finding pipeline: pick top-priority identified finding with a prompt
+    // FINDING PIPELINE: pick top-priority identified finding with a prompt, then send it
+    // Prioritize findings about user-selected active projects, then CWD project
     const projectCtx2 = gatherProjectContext();
     const cwdProject = projectCtx2.cwd ? path.basename(projectCtx2.cwd) : null;
     const typePriority = { bug: 0, improvement: 1, feature: 2, debt: 3 };
+    // A finding is sendable if it has pendingPrompt OR a pending message
     const hasPendingMessage = (f) => f.pendingPrompt || (f.messages && f.messages.some(m => m.status === "pending"));
+    // No projects selected = observe all but don't send
     const sendCandidate = activeProjects.length === 0 ? null : findings
       .filter(f => f.status === "identified" && hasPendingMessage(f))
       .filter(f => activeProjects.some(p => f.project && f.project.includes(p)))
       .sort((a, b) => {
-        const isActive = (p) => activeProjects.some(ap => p && p.includes(ap));
+        // Active project first (user-selected or CWD)
+        const isActive = (p) => {
+          if (activeProjects.length > 0) return activeProjects.some(ap => p && p.includes(ap));
+          return cwdProject && p && p.includes(cwdProject);
+        };
         const aActive = isActive(a.project) ? 0 : 1;
         const bActive = isActive(b.project) ? 0 : 1;
         if (aActive !== bActive) return aActive - bActive;
+        // Scale: small tasks first (1=trivial, 5=epic)
+        const aScale = a.scale || 3;
+        const bScale = b.scale || 3;
+        if (aScale !== bScale) return aScale - bScale;
+        // Rating: good > unrated > bad
         const ratingOrder = { good: 0, undefined: 1, bad: 2 };
         const ra = ratingOrder[a.rating] ?? 1;
         const rb = ratingOrder[b.rating] ?? 1;
         if (ra !== rb) return ra - rb;
+        // Then by type: bugs first
         return (typePriority[a.type] ?? 2) - (typePriority[b.type] ?? 2);
       })[0];
 
     if (sendCandidate) {
+      // Resolve the prompt to send: pendingPrompt or first pending message
       const promptToSend = sendCandidate.pendingPrompt
         || (sendCandidate.messages && sendCandidate.messages.find(m => m.status === "pending"))?.text;
 
       if (promptToSend && !isDuplicate(promptToSend)) {
-        const sendCtx = { id: sendCandidate.id, type: sendCandidate.type || "message", title: sendCandidate.title };
+        const sendCtx = { id: sendCandidate.id, type: sendCandidate.type || "message", title: sendCandidate.title, detail: sendCandidate.detail, file: sendCandidate.file, project: sendCandidate.project };
 
         if (muteMode) {
           broadcastFindingUpdate(sendCandidate.id, "queued");
         } else {
-          broadcastFindingUpdate(sendCandidate.id, "preview", { prompt: promptToSend, countdown: 10 });
-          addChat("system", `Sending in 10s: "${promptToSend.slice(0, 80)}..."`);
+          // 25s insight review window — user can read, edit, or intercept
+          broadcastFindingUpdate(sendCandidate.id, "preview", { prompt: promptToSend, countdown: 25 });
+          addChat("system", `New insight — sending in 25s: "${promptToSend.slice(0, 80)}..." — use ▲▼ to reprioritize or ✕ to cancel`);
 
+          // Wait 25 seconds, checking for cancellation each second
           let cancelled = false;
-          for (let i = 0; i < 10; i++) {
+          for (let i = 0; i < 25; i++) {
             await new Promise(r => setTimeout(r, 1000));
-            broadcast({ type: "sendCountdown", findingId: sendCandidate.id, remaining: 9 - i });
+            broadcast({ type: "sendCountdown", findingId: sendCandidate.id, remaining: 24 - i });
             reloadFindingsFromDisk();
             const current = findings.find(f => f.id === sendCandidate.id);
-            if (!current || current.status === "ignored") {
+            if (!current || current.status === "ignored" || current.status === "parked" || current.status === "identified") {
               cancelled = true;
-              addChat("system", `Send cancelled.`);
+              if (current && current.status === "identified") {
+                addChat("system", `Send intercepted — "${promptToSend.slice(0, 60)}..." returned to queue`);
+              } else {
+                addChat("system", `Send cancelled: "${promptToSend.slice(0, 60)}..."`);
+              }
               break;
             }
           }
 
           if (!cancelled) {
-            const freshBuf = await takeScreenshot();
-            if (freshBuf) fs.writeFileSync(SCREENSHOT_PATH, freshBuf);
-            const stillIdle = freshBuf ? await isDesktopIdle(freshBuf) : true;
-            broadcastFindingUpdate(sendCandidate.id, "sending", { prompt: promptToSend });
-            if (stillIdle) {
-              sent = await sendToApp(promptToSend, sendCtx);
-              if (sent) {
-                sendCandidate.status = "sent";
-                sendCandidate.sentPrompt = promptToSend;
-                sendCandidate.sentAt = Date.now();
-                delete sendCandidate.pendingPrompt;
-                if (sendCandidate.messages) {
-                  const msg = sendCandidate.messages.find(m => m.text === promptToSend && m.status === "pending");
-                  if (msg) msg.status = "sent";
+            // 10s keystroke delay — last chance to intercept before typing
+            broadcastFindingUpdate(sendCandidate.id, "typing", { prompt: promptToSend, countdown: 10 });
+            broadcast({ type: "keystrokeCountdown", findingId: sendCandidate.id, total: 10 });
+
+            let keystrokeCancelled = false;
+            for (let i = 0; i < 10; i++) {
+              await new Promise(r => setTimeout(r, 1000));
+              broadcast({ type: "keystrokeCountdown", findingId: sendCandidate.id, remaining: 9 - i });
+              reloadFindingsFromDisk();
+              const current = findings.find(f => f.id === sendCandidate.id);
+              if (!current || current.status === "ignored" || current.status === "parked" || current.status === "identified") {
+                keystrokeCancelled = true;
+                if (current && current.status === "identified") {
+                  addChat("system", `Keystroke intercepted — "${promptToSend.slice(0, 60)}..." returned to queue`);
+                } else {
+                  addChat("system", `Send cancelled before keystroke: "${promptToSend.slice(0, 60)}..."`);
                 }
-                saveFindings();
-                broadcastFindingUpdate(sendCandidate.id, "sent", { prompt: sendCandidate.sentPrompt });
+                break;
               }
-            } else {
-              broadcastFindingUpdate(sendCandidate.id, "held");
+            }
+
+            if (!keystrokeCancelled) {
+              const freshBuf = await takeScreenshot();
+              if (freshBuf) fs.writeFileSync(SCREENSHOT_PATH, freshBuf);
+              const stillIdle = freshBuf ? await isDesktopIdle(freshBuf) : true;
+
+              broadcastFindingUpdate(sendCandidate.id, "sending", { prompt: promptToSend });
+
+              if (stillIdle) {
+                sent = await sendToApp(promptToSend, sendCtx);
+                if (sent) {
+                  sendCandidate.status = "sent";
+                  sendCandidate.sentPrompt = promptToSend;
+                  sendCandidate.sentAt = Date.now();
+                  delete sendCandidate.pendingPrompt;
+                  if (sendCandidate.messages) {
+                    const msg = sendCandidate.messages.find(m => m.text === promptToSend && m.status === "pending");
+                    if (msg) msg.status = "sent";
+                  }
+                  saveFindings();
+                  broadcastFindingUpdate(sendCandidate.id, "sent", { prompt: sendCandidate.sentPrompt });
+                }
+              } else {
+                broadcastFindingUpdate(sendCandidate.id, "held");
+              }
             }
           }
         }
       }
     }
 
+    // Record cycle history with topic summary for brain self-awareness
     const topicSummary = (result.suggestedPrompt || result.reply || "").slice(0, 100);
     cycleHistory.unshift({
       cycle: cycleCount,
@@ -2317,12 +2626,13 @@ async function runCycle() {
     });
     if (cycleHistory.length > 20) cycleHistory.pop();
 
-    // Auto-re-send stuck findings
-    const RESEND_AFTER_MS = 300000;
+    // Auto-re-send findings stuck at "sent" (not yet received) — max 1 retry
+    const RESEND_AFTER_MS = 300000; // re-send after 5 minutes
+    const MAX_RESENDS = 1;
     const sentFindings = findings.filter(f => f.status === "sent" && f.sentPrompt && f.sentAt);
     for (const f of sentFindings) {
       const resendCount = f.resendCount || 0;
-      if (resendCount >= 1) {
+      if (resendCount >= MAX_RESENDS) {
         f.status = "failed";
         broadcastFindingUpdate(f.id, "failed");
         saveFindings();
@@ -2334,7 +2644,7 @@ async function runCycle() {
         f.sentAt = Date.now();
         f.resendCount = resendCount + 1;
         saveFindings();
-        break;
+        break; // only re-send one per cycle
       }
     }
 
@@ -2342,6 +2652,7 @@ async function runCycle() {
     scheduleNextCycle();
     drainPendingChat();
   } catch (e) {
+    // Record failed cycle
     cycleHistory.unshift({
       cycle: cycleCount,
       time: new Date().toLocaleTimeString(),
@@ -2350,6 +2661,7 @@ async function runCycle() {
       error: e.message.slice(0, 80),
     });
     if (cycleHistory.length > 20) cycleHistory.pop();
+
     addChat("error", "Auto-check failed: " + e.message);
     broadcast({ type: "brainDone" });
     clearThinkingGuard();
@@ -2372,8 +2684,8 @@ function start() {
   cycleCount = 0;
   state = "WAITING";
   broadcastState();
-  addChat("system", "Autopilot started — checking every " + settings.interval + "s.");
-  loopTimer = setTimeout(() => runCycle(), 3000);
+  addChat("system", "Autopilot started — checking every " + settings.interval + "s. First scan in 3s.");
+  loopTimer = setTimeout(() => runCycle(), 3000); // fast first cycle
 }
 
 function stop() {
@@ -2411,10 +2723,18 @@ const server = http.createServer((req, res) => {
     req.on("end", () => {
       try {
         const { id, status } = JSON.parse(body);
-        if (!id || !status) { res.writeHead(400); res.end(JSON.stringify({ error: "id and status required" })); return; }
+        if (!id || !status) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "id and status required" }));
+          return;
+        }
         reloadFindingsFromDisk();
         const f = findings.find(f => f.id === id);
-        if (!f) { res.writeHead(404); res.end(JSON.stringify({ error: "not found" })); return; }
+        if (!f) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "finding not found", id }));
+          return;
+        }
         const oldStatus = f.status;
         f.status = status;
         saveFindings();
@@ -2423,7 +2743,7 @@ const server = http.createServer((req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ id, oldStatus, newStatus: status }));
       } catch (e) {
-        res.writeHead(400);
+        res.writeHead(400, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: e.message }));
       }
     });
@@ -2440,31 +2760,70 @@ const server = http.createServer((req, res) => {
         loadGoals();
         if (action === "add" && project && title) {
           if (!goalsData.projects[project]) goalsData.projects[project] = { description: "", goals: [] };
-          goalsData.projects[project].goals.push({
-            id: `goal-${project}-${Date.now()}`, title, source: "user", priority: priority || 1, status: "active", created: new Date().toISOString(), insights: [],
+          const goals = goalsData.projects[project].goals;
+          goals.push({
+            id: `goal-${project}-${Date.now()}`,
+            title,
+            source: "user",
+            priority: priority || 1,
+            status: "active",
+            created: new Date().toISOString(),
+            insights: [],
           });
-          saveGoals(); broadcastState();
-          res.writeHead(200); res.end(JSON.stringify({ ok: true }));
+          saveGoals();
+          broadcastState();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
         } else if (action === "update" && goalId) {
           for (const p of Object.values(goalsData.projects)) {
             const goal = (p.goals || []).find(g => g.id === goalId);
-            if (goal) { if (title) goal.title = title; if (priority) goal.priority = priority; if (status) goal.status = status; }
+            if (goal) {
+              if (title) goal.title = title;
+              if (priority) goal.priority = priority;
+              if (status) goal.status = status;
+            }
           }
-          saveGoals(); broadcastState();
-          res.writeHead(200); res.end(JSON.stringify({ ok: true }));
+          saveGoals();
+          broadcastState();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } else if (action === "removeProject" && project) {
+          delete goalsData.projects[project];
+          saveGoals();
+          broadcastState();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } else if (action === "setProjectPriority" && project && priority != null) {
+          const proj = goalsData.projects[project];
+          if (proj) {
+            proj.priority = priority;
+            saveGoals();
+            broadcastState();
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
         } else if (action === "setMission" && title) {
-          goalsData.mission = title; userGuidance = title;
-          saveGoals(); broadcastState();
-          res.writeHead(200); res.end(JSON.stringify({ ok: true }));
+          goalsData.mission = title;
+          userGuidance = title; // keep in-memory sync
+          saveGoals();
+          broadcastState();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
         } else if (action === "remove" && goalId) {
-          for (const p of Object.values(goalsData.projects)) { p.goals = (p.goals || []).filter(g => g.id !== goalId); }
-          saveGoals(); broadcastState();
-          res.writeHead(200); res.end(JSON.stringify({ ok: true }));
+          for (const p of Object.values(goalsData.projects)) {
+            p.goals = (p.goals || []).filter(g => g.id !== goalId);
+          }
+          saveGoals();
+          broadcastState();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
         } else {
-          res.writeHead(400); res.end(JSON.stringify({ error: "invalid action" }));
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid action" }));
         }
       } catch (e) {
-        res.writeHead(400); res.end(JSON.stringify({ error: e.message }));
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: e.message }));
       }
     });
   } else {
@@ -2476,38 +2835,77 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
+  // Send full state on connect — must match broadcastState() fields
   ws.send(JSON.stringify({
     type: "state", running, state, cycleCount,
     interval: settings.interval,
     uptime: Date.now() - startTime, memoryFiles: memoryFileCount,
     brainModel: "claude-opus-4-6",
     guidance: userGuidance,
-    activeProjects, allProjects, cycleHistory, findings, filesInvestigated,
+    activeProjects,
+    allProjects,
+    cycleHistory,
+    findings,
+    filesInvestigated,
+    continueQueue,
+    screenshotDisabled,
+    screenshotMode: lastScreenshotMode || "unknown",
+    chatBusy,
+    muteMode,
+    queuedFindings: findings.filter(f => f.status === "queued").length,
     goals: goalsData,
+    cli: { queue: cliQueue, history: cliHistory, status: cliStatus, autoMode: cliAutoMode, session: CLI_SESSION },
   }));
   ws.send(JSON.stringify({ type: "chatLog", messages: chatLog }));
+  // Send initial CLI terminal content
   if (cliLastScreen) ws.send(JSON.stringify({ type: "cli_terminal", content: cliLastScreen }));
 
   ws.on("message", async (raw) => {
     try {
       const msg = JSON.parse(raw);
+
       if (msg.action === "start") start();
       else if (msg.action === "stop") stop();
       else if (msg.action === "chat") {
-        if (msg.text && msg.text.startsWith("autopilot:")) return;
+        // Filter echoed autopilot messages to prevent feedback loop
+        if (msg.text && msg.text.startsWith("autopilot:")) {
+          console.log("[chat] Filtered echo: " + msg.text.slice(0, 60));
+          return;
+        }
         chatWithBrain(msg.text);
       } else if (msg.action === "sendDirect") {
         addChat("user", "[direct] " + msg.text);
         sendToApp(msg.text);
       } else if (msg.action === "guide") {
+        // Unified: mission input updates goals.json mission
         loadGoals();
         goalsData.mission = msg.text;
         saveGoals();
-        userGuidance = msg.text;
+        userGuidance = msg.text; // keep in-memory sync for brain prompt
+        broadcastState();
+      } else if (msg.action === "hideProject") {
+        const idx = allProjects.indexOf(msg.project);
+        if (idx !== -1) allProjects.splice(idx, 1);
+        // Also remove from active
+        activeProjects = activeProjects.filter(p => p !== msg.project);
+        try { atomicWriteSync(ACTIVE_PROJECTS_FILE, JSON.stringify(activeProjects)); } catch {}
+        // Remove from goals too
+        delete goalsData.projects[msg.project];
+        saveGoals();
         broadcastState();
       } else if (msg.action === "setProjects") {
         activeProjects = msg.projects || [];
         try { atomicWriteSync(ACTIVE_PROJECTS_FILE, JSON.stringify(activeProjects)); } catch {}
+        // Auto-create goals entries for newly activated projects
+        let goalsChanged = false;
+        for (const p of activeProjects) {
+          if (!goalsData.projects[p]) {
+            goalsData.projects[p] = { description: "", goals: [] };
+            goalsChanged = true;
+          }
+        }
+        if (goalsChanged) saveGoals();
+        // Clear stale pendingPrompts from findings outside the new project filter
         if (activeProjects.length > 0) {
           let cleared = 0;
           for (const f of findings) {
@@ -2516,7 +2914,10 @@ wss.on("connection", (ws) => {
               cleared++;
             }
           }
-          if (cleared > 0) saveFindings();
+          if (cleared > 0) {
+            saveFindings();
+            console.log(`[setProjects] Cleared ${cleared} stale pendingPrompt(s) from deselected projects`);
+          }
         }
         broadcastState();
       } else if (msg.action === "settings") {
@@ -2524,17 +2925,55 @@ wss.on("connection", (ws) => {
         addChat("system", "Interval: " + settings.interval + "s");
         broadcastState();
       } else if (msg.action === "getKnowledge") {
-        ws.send(JSON.stringify({ type: "knowledge", ...loadKnowledge() }));
+        const knowledge = loadKnowledge();
+        ws.send(JSON.stringify({ type: "knowledge", ...knowledge }));
+      } else if (msg.action === "addGoal") {
+        const knowledge = loadKnowledge();
+        knowledge.goals.goals.push({
+          goal: msg.goal,
+          project: msg.project || "general",
+          status: "active",
+          created: new Date().toISOString(),
+        });
+        knowledge.goals.updated = new Date().toISOString();
+        atomicWriteSync(GOALS_FILE, JSON.stringify(knowledge.goals, null, 2));
+        broadcast({ type: "knowledge", ...loadKnowledge() });
+      } else if (msg.action === "completeGoal") {
+        const knowledge = loadKnowledge();
+        if (knowledge.goals.goals[msg.index]) {
+          knowledge.goals.goals[msg.index].status = "completed";
+          knowledge.goals.goals[msg.index].completedAt = new Date().toISOString();
+        }
+        atomicWriteSync(GOALS_FILE, JSON.stringify(knowledge.goals, null, 2));
+        broadcast({ type: "knowledge", ...loadKnowledge() });
+      } else if (msg.action === "savePrompt") {
+        const knowledge = loadKnowledge();
+        knowledge.prompts.prompts.push({
+          prompt: msg.prompt,
+          outcome: msg.outcome || "effective",
+          project: msg.project || "general",
+          savedAt: new Date().toISOString(),
+        });
+        knowledge.prompts.updated = new Date().toISOString();
+        atomicWriteSync(PROMPTS_FILE, JSON.stringify(knowledge.prompts, null, 2));
+        broadcast({ type: "knowledge", ...loadKnowledge() });
       } else if (msg.action === "sendSuggested") {
         if (msg.prompt) {
           if (isDuplicate(msg.prompt)) {
             console.log("[send] Blocked duplicate suggested send");
           } else {
             const ok = await sendToApp(msg.prompt);
+            // Only mark finding as "sent" if the send actually succeeded
             if (ok && msg.findingId) {
               reloadFindingsFromDisk();
               const f = findings.find(f => f.id === msg.findingId);
-              if (f) { f.status = "sent"; f.sentPrompt = msg.prompt; f.sentAt = Date.now(); saveFindings(); broadcastState(); }
+              if (f) {
+                f.status = "sent";
+                f.sentPrompt = msg.prompt;
+                f.sentAt = Date.now();
+                saveFindings();
+                broadcastState();
+              }
             }
           }
         }
@@ -2543,39 +2982,83 @@ wss.on("connection", (ws) => {
           const f = findings.find(f => f.id === msg.findingId);
           if (f) {
             f.status = msg.status;
-            if (msg.status === "sent" && msg.sentPrompt) { f.sentPrompt = msg.sentPrompt; f.sentAt = Date.now(); }
-            saveFindings(); broadcastState();
+            // Store the prompt that was sent so we can re-send if not received
+            if (msg.status === "sent" && msg.sentPrompt) {
+              f.sentPrompt = msg.sentPrompt;
+              f.sentAt = Date.now();
+            }
+            saveFindings();
+            broadcastState();
           }
         }
       } else if (msg.action === "dismissFinding") {
         const f = findings.find(f => f.id === msg.findingId);
-        if (f) { f.status = "ignored"; f.dismissedAt = new Date().toISOString(); saveFindings(); broadcastState(); }
+        if (f) {
+          f.status = "ignored";
+          f.dismissedAt = new Date().toISOString();
+          saveFindings();
+          broadcastState();
+        }
+      } else if (msg.action === "parkFinding") {
+        const f = findings.find(f => f.id === msg.findingId);
+        if (f) {
+          f.status = "parked";
+          f.parkedAt = new Date().toISOString();
+          saveFindings();
+          broadcastState();
+        }
       } else if (msg.action === "dismissAllFindings") {
+        const activeStatuses = ["identified", "sent", "received"];
         let count = 0;
         for (const f of findings) {
-          if (["identified", "sent", "received"].includes(f.status)) {
-            f.status = "ignored"; f.dismissedAt = new Date().toISOString(); count++;
+          if (activeStatuses.includes(f.status)) {
+            f.status = "ignored";
+            f.dismissedAt = new Date().toISOString();
+            count++;
           }
         }
-        if (count) { saveFindings(); addChat("system", `Dismissed ${count} finding(s).`); }
+        if (count) { saveFindings(); addChat("system", `Dismissed ${count} active finding(s).`); }
         broadcastState();
       } else if (msg.action === "rateFinding") {
         if (msg.findingId && msg.rating) {
           const f = findings.find(f => f.id === msg.findingId);
-          if (f) { f.rating = f.rating === msg.rating ? null : msg.rating; saveFindings(); broadcastState(); }
+          if (f) {
+            // Toggle: clicking same rating again clears it
+            f.rating = f.rating === msg.rating ? null : msg.rating;
+            saveFindings();
+            broadcastState();
+          }
+        }
+      } else if (msg.action === "setScale") {
+        if (msg.findingId && msg.scale >= 1 && msg.scale <= 5) {
+          const f = findings.find(f => f.id === msg.findingId);
+          if (f) {
+            f.scale = msg.scale;
+            saveFindings();
+            broadcastState();
+          }
         }
       } else if (msg.action === "toggleMute") {
         muteMode = !muteMode;
-        try { atomicWriteSync(MUTE_FILE, JSON.stringify({ muted: muteMode })); } catch {}
+        try { atomicWriteSync(MUTE_FILE, JSON.stringify({ muted: muteMode })); } catch (e) { console.error("[mute] Failed to persist mute state:", e.message); }
         if (muteMode) {
-          addChat("system", "Mute ON — findings will queue.");
+          addChat("system", "Mute ON — findings will queue instead of sending.");
         } else {
+          // Count queued findings and reset them to identified so pipeline can re-evaluate
           const queued = findings.filter(f => f.status === "queued");
-          for (const f of queued) f.status = "identified";
-          if (queued.length > 0) saveFindings();
-          addChat("system", `Mute OFF — ${queued.length} queued finding(s) ready.`);
+          for (const f of queued) {
+            f.status = "identified";
+          }
+          if (queued.length > 0) {
+            saveFindings();
+            // Reset cooldown so queued findings can send immediately
+            lastSendTime = 0;
+          }
+          addChat("system", `Mute OFF — ${queued.length} queued finding(s) ready to send.`);
         }
         broadcastState();
+      } else if (msg.action === "switchTab") {
+        dashboardTab = msg.tab || "chat";
       } else if (msg.action === "scanThreads") {
         const digest = scanRecentThreads();
         ws.send(JSON.stringify({ type: "threadScan", digest }));
@@ -2587,6 +3070,7 @@ wss.on("connection", (ws) => {
       }
     } catch (e) {
       console.error("WebSocket message error:", e);
+      addChat("error", "WS handler error: " + (e.message || String(e)));
     }
   });
 });
@@ -2604,7 +3088,9 @@ function shutdown() {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
+// Kill stale process on port before starting
 function startServer() {
+  // Pre-emptively kill anything on our port
   try {
     execSync(`lsof -ti:${PORT} | xargs kill -9 2>/dev/null`, { timeout: 3000 });
   } catch {}
@@ -2624,13 +3110,14 @@ function startServer() {
       if (!loadVoiceProfile()) {
         addChat("system", "No voice profile found — generating from your message history...");
         generateVoiceProfile().then(() => {
-          addChat("system", "Auto-starting...");
+          addChat("system", "Voice profile loaded. Auto-starting...");
           broadcastState();
         }).catch(() => {});
       } else {
         addChat("system", "Voice profile loaded. Auto-starting...");
       }
 
+      // Take initial screenshot so tracker preview has something immediately
       takeScreenshot().then(() => broadcastState()).catch(() => {});
       start();
     });
