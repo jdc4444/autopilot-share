@@ -49,6 +49,29 @@ function findSystemNode() {
 
 const CLAUDE_PATH = findClaude();
 const SYSTEM_NODE = findSystemNode();
+
+// Check if Claude Code is authenticated — returns true if logged in
+function checkClaudeAuth() {
+  try {
+    const env = { ...process.env };
+    delete env.CLAUDECODE;
+    const result = execFileSync(CLAUDE_PATH, ["-p", "ping", "--max-turns", "1"], {
+      encoding: "utf8",
+      timeout: 15000,
+      env,
+    });
+    return true;
+  } catch (e) {
+    const msg = (e.stderr || e.message || "").toLowerCase();
+    if (msg.includes("not logged in") || msg.includes("login") || msg.includes("auth")) {
+      return false;
+    }
+    // Other errors (network, etc.) — assume logged in, will fail later with better context
+    return true;
+  }
+}
+
+// Auto-detect projects base and sessions directories
 const PROJECTS_BASE = path.join(HOME, ".claude/projects");
 
 function findSessionsDir(cwd) {
@@ -872,6 +895,11 @@ Pick 10 representative messages that capture their style well. Include a mix of 
 Be specific and data-driven — reference actual patterns from the messages. This profile will be used to match their communication style in future interactions.`;
 
   let resultText = "";
+  // Strip CLAUDECODE env var so the Agent SDK subprocess doesn't think
+  // it's inside a nested Claude Code session and refuse to start.
+  const savedClaudeCode = process.env.CLAUDECODE;
+  delete process.env.CLAUDECODE;
+  try {
   for await (const message of query({
     prompt,
     options: {
@@ -887,6 +915,10 @@ Be specific and data-driven — reference actual patterns from the messages. Thi
       resultText = message.result;
     }
   }
+  } finally {
+    if (savedClaudeCode !== undefined) process.env.CLAUDECODE = savedClaudeCode;
+  }
+
   if (!resultText) throw new Error("Voice analysis returned empty result");
   return resultText;
 }
@@ -1978,10 +2010,16 @@ async function callBrain(prompt, sessionType = "cycle") {
     const isElectron = !!process.versions.electron;
     const execPath = (isElectron && fs.existsSync(SYSTEM_NODE)) ? SYSTEM_NODE : process.execPath;
 
+    // Strip CLAUDECODE env var so the Agent SDK subprocess doesn't think
+    // it's inside a nested Claude Code session and refuse to start.
+    const workerEnv = { ...process.env };
+    delete workerEnv.CLAUDECODE;
+
     const worker = fork(BRAIN_WORKER_PATH, [], {
       execPath,
       cwd: APP_DIR,
       silent: true,
+      env: workerEnv,
     });
 
     // Track cycle worker for preemption
@@ -3101,7 +3139,65 @@ function startServer() {
       console.log(`  Working dir: ${USER_CWD}`);
       console.log(`  Projects base: ${PROJECTS_BASE}`);
       console.log(`  Memory dir: ${MEMORY_DIR || "(none found)"}`);
-      addChat("system", "Autopilot online — scanning threads...");
+      // ── Preflight checks ──────────────────────────────────────
+      addChat("system", "Running preflight checks...");
+      broadcastState();
+      const preflight = { auth: false, screenRecording: false, accessibility: false };
+      let fatal = false;
+
+      // 1. Claude Code auth
+      addChat("system", "Checking Claude Code auth...");
+      broadcastState();
+      if (!checkClaudeAuth()) {
+        console.error("Claude Code is not logged in. Run: claude /login");
+        addChat("system", "✗ Claude Code — not logged in. Run `claude /login` in a terminal, then restart.");
+        fatal = true;
+      } else {
+        addChat("system", "✓ Claude Code — authenticated.");
+        preflight.auth = true;
+      }
+
+      // 2. Screen Recording permission (screencapture)
+      try {
+        const testImg = path.join(require("os").tmpdir(), "autopilot-preflight-test.png");
+        execSync(`screencapture -x -t png "${testImg}"`, { timeout: 5000 });
+        if (fs.existsSync(testImg)) {
+          const stat = fs.statSync(testImg);
+          fs.unlinkSync(testImg);
+          if (stat.size > 100) {
+            addChat("system", "✓ Screen Recording — granted.");
+            preflight.screenRecording = true;
+          } else {
+            addChat("system", "✗ Screen Recording — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Screen Recording, then restart.");
+          }
+        }
+      } catch {
+        addChat("system", "✗ Screen Recording — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Screen Recording, then restart.");
+      }
+
+      // 3. Accessibility permission (AppleScript keystroke typing)
+      try {
+        execSync(`osascript -e 'tell application "System Events" to return name of first process'`, { timeout: 5000 });
+        addChat("system", "✓ Accessibility — granted.");
+        preflight.accessibility = true;
+      } catch {
+        addChat("system", "✗ Accessibility — permission denied. Grant it to Terminal (or node) in System Settings → Privacy & Security → Accessibility, then restart.");
+      }
+
+      broadcastState();
+
+      if (fatal) {
+        addChat("system", "Preflight failed — fix the issues above and restart Autopilot.");
+        broadcastState();
+        return;
+      }
+
+      if (!preflight.screenRecording || !preflight.accessibility) {
+        addChat("system", "Some permissions missing — Autopilot will start but with reduced functionality.");
+      }
+
+      // ── Normal startup ─────────────────────────────────────────
+      addChat("system", "Scanning threads...");
       const digest = scanRecentThreads();
       const sessionCount = Object.keys(digest.sessions).length;
       addChat("system", `Scanned ${sessionCount} recent sessions.`);
