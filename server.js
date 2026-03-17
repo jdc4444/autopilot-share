@@ -664,6 +664,44 @@ function scanRecentThreads() {
 // VOICE PROFILE GENERATION — 3-step: collect messages → analyze → write doc
 // ============================================================
 
+// Default voice profile used when insufficient message history exists.
+// Generic enough for any power user of Claude Code. Gets replaced once
+// enough messages accumulate for a real analysis.
+const DEFAULT_VOICE_PROFILE = `## Voice & Style
+
+- **Concise and action-oriented.** Most messages are direct instructions — short imperative sentences, not paragraphs. Users of CLI tools tend to be terse.
+- **Lowercase casual.** Minimal punctuation, lowercase preferred. Fragments over full sentences. "fix the bug" not "Could you please fix the bug?"
+- **Approval is brief then pivots.** "great." "cool." "nice." — immediately followed by the next instruction. Don't dwell on success.
+- **Frustration is direct.** Escalates through repetition and bluntness: "that's not right" → "I said X not Y" → "this is still broken". Triggered by: things not working after being told they're fixed, unnecessary additions, polish masking broken fundamentals.
+
+## Thinking & Problem-Solving
+
+- **Iterative.** Gives a broad direction, looks at the result, fires off corrections. Thinks by seeing output, not by writing specs upfront.
+- **Challenges claims.** Will question whether something actually works vs just looks right. "is this real or does it just look real?"
+- **Anti-bloat.** Wants fewer features done well. Hates unnecessary additions, over-engineering, and verbose explanations.
+
+## How They Work With Claude
+
+- **Delegates implementation, maintains quality control.** Expects autonomous execution but catches logical errors.
+- **Expects momentum.** "keep going", "continue", "do all" — wants the work to flow without unnecessary pauses.
+- **Wants results, not explanations.** Prefers to see the fix rather than read about what you plan to do.
+
+## Communication Guidelines
+
+- Match the user's energy and length. If they send 5 words, don't reply with 5 paragraphs.
+- Lead with action, not preamble. Do the thing, then briefly note what you did.
+- Don't add features that weren't asked for. Don't refactor surrounding code. Don't add comments or docstrings to code you didn't change.
+- If something is broken, fix it and show proof. Don't explain what might be wrong — verify and demonstrate.
+
+## 5 Example Messages (Generic Power User)
+
+1. "the chart is broken on mobile. fix the responsive layout and check dark mode too"
+2. "that's not what I asked for. revert the last change and just do X"
+3. "great. now add filtering by date range"
+4. "why is this still showing stale data. check the cache logic"
+5. "stop explaining and just do it. show me the result"`;
+
+
 // Step 1: Pull ~1000 user messages from ALL JSONL session logs
 function collectUserMessages(targetCount = 1000) {
   const messages = [];
@@ -832,9 +870,11 @@ async function generateVoiceProfile() {
     broadcastState();
     const messages = collectUserMessages(1000);
     if (messages.length < 20) {
-      addChat("system", `Only found ${messages.length} messages — need at least 20 for voice profile. Skipping.`);
+      addChat("system", `Only found ${messages.length} messages — writing default voice profile. Will regenerate once you have more history.`);
       broadcastState();
-      return false;
+      writeVoiceProfile(DEFAULT_VOICE_PROFILE, 0);
+      loadVoiceProfile();
+      return true;
     }
     addChat("system", `Step 1 complete: collected ${messages.length} unique messages`);
     broadcastState();
