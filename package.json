@@ -1,7 +1,7 @@
 {
-  "name": "autopilot-share",
+  "name": "autopilot-codex",
   "version": "1.0.0",
-  "description": "Smart autopilot for Claude Code with AI-powered contextual responses",
+  "description": "Smart autopilot for Codex with AI-powered contextual responses",
   "main": "electron.js",
   "scripts": {
     "start": "node server.js",
@@ -9,8 +9,8 @@
     "build": "electron-builder --mac"
   },
   "build": {
-    "appId": "com.autopilot-share.app",
-    "productName": "Autopilot",
+    "appId": "com.autopilot-codex.app",
+    "productName": "Autopilot Codex",
     "mac": {
       "category": "public.app-category.developer-tools",
       "target": "dir",
@@ -20,7 +20,7 @@
       "electron.js",
       "index.html",
       "server.js",
-      "send_to_claude.py",
+      "send_to_codex.py",
       "brain-worker.js",
       "node_modules/**"
     ],
@@ -30,21 +30,16 @@
         "to": "knowledge"
       },
       {
-        "from": "send_to_claude.py",
-        "to": "send_to_claude.py"
+        "from": "send_to_codex.py",
+        "to": "send_to_codex.py"
       }
-    ],
-    "asarUnpack": [
-      "node_modules/sharp/**",
-      "node_modules/@anthropic-ai/claude-agent-sdk/**"
     ]
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.76",
     "sharp": "^0.34.5",
     "ws": "^8.18.0"
   },
-  "keywords": ["claude", "autopilot", "ai", "agent"],
+  "keywords": ["codex", "autopilot", "ai", "agent"],
   "author": "",
   "license": "MIT",
   "type": "commonjs",

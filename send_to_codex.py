@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Send a message to Claude Desktop's currently open conversation.
-Usage: send_to_claude.py <message>
+"""Send a message to Codex's currently open conversation.
+Usage: send_to_codex.py <message>
 
 Clicks the input field first (Electron needs focus), then types via keystroke.
-Cmd-V paste does NOT work in Claude Desktop's Electron input.
+Cmd-V paste does NOT work reliably in Codex's Electron input.
 """
 import sys
 import subprocess
@@ -18,11 +18,11 @@ def send(message):
     timeout = max(30, int(type_delay + 10))
 
     script = f'''
-    tell application "Claude" to activate
+    tell application "Codex" to activate
     delay 0.5
 
     tell application "System Events"
-        tell process "Claude"
+        tell process "Codex"
             set frontmost to true
             delay 0.3
 
@@ -38,7 +38,7 @@ def send(message):
             keystroke "{escaped}"
             delay {type_delay}
 
-            -- Re-focus Claude before Enter in case another app stole focus
+            -- Re-focus Codex before Enter in case another app stole focus
             set frontmost to true
             delay 0.2
             key code 36
@@ -60,7 +60,7 @@ def send(message):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: send_to_claude.py <message>")
+        print("Usage: send_to_codex.py <message>")
         sys.exit(1)
 
     message = " ".join(sys.argv[1:])

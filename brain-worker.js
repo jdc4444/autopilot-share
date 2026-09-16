@@ -1,98 +1,161 @@
-// brain-worker.js — runs Agent SDK query in an isolated child process
+// brain-worker.js — runs Codex CLI queries in an isolated child process
 // Forked by server.js so brain crashes/hangs can't take down the server
-const { query } = require("@anthropic-ai/claude-agent-sdk");
+const { spawn } = require("child_process");
+const readline = require("readline");
+
+function buildArgs({ sessionId, cwd, model, reasoningEffort }) {
+  if (sessionId) {
+    const args = [
+      "exec", "resume", sessionId,
+      "--json",
+      "--skip-git-repo-check",
+      "-m", model || "gpt-5.4",
+    ];
+    if (reasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+    args.push("-");
+    return args;
+  }
+
+  const args = [
+    "exec",
+    "--json",
+    "--skip-git-repo-check",
+    "-m", model || "gpt-5.4",
+  ];
+
+  if (reasoningEffort) args.push("-c", `model_reasoning_effort=${JSON.stringify(reasoningEffort)}`);
+  if (cwd) args.push("-C", cwd);
+  args.push("-");
+  return args;
+}
+
+function buildPrompt(systemPrompt, prompt, isResume) {
+  if (isResume) return prompt;
+  return `${systemPrompt}\n\n${prompt}`;
+}
 
 process.on("message", async (msg) => {
   if (msg.type !== "run") return;
 
-  const { prompt, systemPrompt, sessionId, cwd, claudePath } = msg;
+  const { prompt, systemPrompt, sessionId, cwd, codexPath, model, reasoningEffort } = msg;
+  const args = buildArgs({ sessionId, cwd, model, reasoningEffort });
+  const child = spawn(codexPath || "codex", args, {
+    cwd: cwd || process.cwd(),
+    env: { ...process.env },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
 
   let finalText = "";
-  let resultData = null;
-  let thinkingChars = 0;
+  let threadId = sessionId || null;
+  let usage = null;
+  let numTurns = 0;
+  let stderr = "";
+  let textStarted = false;
+  let finished = false;
 
-  const queryOpts = {
-    prompt,
-    options: {
-      systemPrompt,
-      allowedTools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
-      model: "claude-opus-4-6",
-      permissionMode: "bypassPermissions",
-      includePartialMessages: true,
-      pathToClaudeCodeExecutable: claudePath,
-      cwd,
-    },
-  };
+  const rl = readline.createInterface({ input: child.stdout });
 
-  if (sessionId) queryOpts.options.resume = sessionId;
+  function finish(code) {
+    if (finished) return;
+    finished = true;
+    try { rl.close(); } catch {}
+    setImmediate(() => process.exit(code));
+  }
 
-  try {
-    for await (const message of query(queryOpts)) {
-      if (message.type === "stream_event" && message.event) {
-        const evt = message.event;
+  function appendText(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return;
+    if (!textStarted) {
+      textStarted = true;
+      process.send({ type: "event", event: "text_start" });
+    }
+    finalText = finalText ? `${finalText}\n\n${trimmed}` : trimmed;
+    process.send({ type: "event", event: "text_delta", text: trimmed, accumulated: finalText });
+  }
 
-        if (evt.type === "content_block_start") {
-          const cb = evt.content_block;
-          if (cb && cb.type === "thinking") {
-            thinkingChars = 0;
-            process.send({ type: "event", event: "thinking_start" });
-          } else if (cb && cb.type === "tool_use") {
-            process.send({ type: "event", event: "tool_start", name: cb.name });
-          } else if (cb && cb.type === "text") {
-            process.send({ type: "event", event: "text_start" });
-          }
-        } else if (evt.type === "content_block_delta") {
-          const d = evt.delta;
-          if (d && d.type === "thinking_delta") {
-            thinkingChars += (d.thinking || "").length;
-            if (thinkingChars % 200 < 20) {
-              process.send({ type: "event", event: "thinking_delta", length: thinkingChars });
-            }
-          } else if (d && d.type === "text_delta") {
-            finalText += d.text || "";
-            process.send({ type: "event", event: "text_delta", text: d.text, accumulated: finalText });
-          }
-        } else if (evt.type === "content_block_stop") {
-          if (thinkingChars > 0) {
-            process.send({ type: "event", event: "thinking_done", length: thinkingChars });
-            thinkingChars = 0;
-          }
-        }
-      } else if (message.type === "assistant" && message.message) {
-        for (const block of message.message.content || []) {
-          if (block.type === "tool_use") {
-            let inputSummary = "";
-            if (block.input) {
-              if (block.input.file_path) inputSummary = block.input.file_path;
-              else if (block.input.command) inputSummary = block.input.command.slice(0, 80);
-              else if (block.input.pattern) inputSummary = block.input.pattern;
-              else if (block.input.prompt) inputSummary = block.input.prompt.slice(0, 60) + "...";
-              else inputSummary = JSON.stringify(block.input).slice(0, 80);
-            }
-            process.send({ type: "event", event: "tool_use", name: block.name, input: inputSummary });
-          }
-        }
-      } else if (message.type === "user" && message.tool_use_result) {
-        const summary = typeof message.tool_use_result === "string"
-          ? message.tool_use_result.slice(0, 120)
-          : JSON.stringify(message.tool_use_result).slice(0, 120);
-        process.send({ type: "event", event: "tool_result", summary });
-      } else if (message.type === "result") {
-        resultData = message;
-        if (message.result) finalText = message.result;
-        process.send({
-          type: "result",
-          sessionId: message.session_id,
-          usage: message.usage,
-          numTurns: message.num_turns,
-        });
-      }
+  rl.on("line", (line) => {
+    if (!line.trim()) return;
+
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return;
     }
 
-    if (resultData && resultData.result) finalText = resultData.result;
+    if (event.type === "thread.started") {
+      threadId = event.thread_id || threadId;
+      return;
+    }
+
+    if (event.type === "turn.started") {
+      process.send({ type: "event", event: "thinking_start" });
+      return;
+    }
+
+    if (event.type === "item.started" && event.item?.type === "command_execution") {
+      process.send({ type: "event", event: "tool_start", name: "Bash" });
+      return;
+    }
+
+    if (event.type === "item.completed") {
+      const item = event.item || {};
+      if (item.type === "agent_message") {
+        appendText(item.text);
+      } else if (item.type === "command_execution") {
+        process.send({
+          type: "event",
+          event: "tool_use",
+          name: "Bash",
+          input: String(item.command || "").slice(0, 160),
+        });
+        if (item.aggregated_output) {
+          process.send({
+            type: "event",
+            event: "tool_result",
+            summary: String(item.aggregated_output).slice(0, 160),
+          });
+        }
+      }
+      return;
+    }
+
+    if (event.type === "turn.completed") {
+      usage = event.usage || null;
+      numTurns += 1;
+      process.send({ type: "event", event: "thinking_done" });
+      process.send({
+        type: "result",
+        sessionId: threadId,
+        usage,
+        numTurns,
+      });
+    }
+  });
+
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+
+  child.on("error", (error) => {
+    process.send({ type: "error", message: error.message, stderr });
+    finish(1);
+  });
+
+  child.on("close", (code) => {
+    if (code !== 0) {
+      process.send({
+        type: "error",
+        message: stderr.trim() || `Codex exited with code ${code}`,
+        stderr,
+      });
+      finish(code || 1);
+      return;
+    }
 
     process.send({ type: "done", text: finalText });
-  } catch (e) {
-    process.send({ type: "error", message: e.message, stderr: e.stderr || "" });
-  }
+    finish(0);
+  });
+
+  child.stdin.end(buildPrompt(systemPrompt, prompt, !!sessionId));
 });

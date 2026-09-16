@@ -4,13 +4,13 @@ const path = require("path");
 const PORT = 3460;
 let mainWindow;
 
-// Set app name so macOS menu bar says "Autopilot"
-app.name = "Autopilot";
+// Set app name so macOS menu bar says "Autopilot Codex"
+app.name = "Autopilot Codex";
 
 // Standard macOS menu with copy/paste/select all
 const template = [
   {
-    label: "Autopilot",
+    label: "Autopilot Codex",
     submenu: [
       { role: "about" },
       { type: "separator" },
@@ -50,7 +50,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1200,
     height: 800,
-    title: "Autopilot",
+    title: "Autopilot Codex",
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,

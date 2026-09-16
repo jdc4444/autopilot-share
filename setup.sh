@@ -1,8 +1,8 @@
 #!/bin/bash
-# Autopilot Share — one-command setup
+# Autopilot Codex — one-command setup
 set -e
 
-echo "=== Autopilot Setup ==="
+echo "=== Autopilot Codex Setup ==="
 echo ""
 
 # Check Node.js
@@ -13,29 +13,29 @@ fi
 NODE_V=$(node -v)
 echo "Node.js: $NODE_V"
 
-# Check Python 3 (needed for send_to_claude.py)
+# Check Python 3 (needed for send_to_codex.py)
 if ! command -v python3 &>/dev/null; then
-  echo "WARNING: python3 not found. Message sending to Claude Desktop won't work."
+  echo "WARNING: python3 not found. Message sending to Codex won't work."
 else
   echo "Python3: $(python3 --version 2>&1)"
 fi
 
-# Check Claude Code CLI
-CLAUDE_PATH=""
-for p in "$HOME/.claude/local/claude" /opt/homebrew/bin/claude /usr/local/bin/claude; do
+# Check Codex CLI
+CODEX_PATH=""
+for p in "/Applications/Codex.app/Contents/Resources/codex" /opt/homebrew/bin/codex /usr/local/bin/codex; do
   if [ -x "$p" ]; then
-    CLAUDE_PATH="$p"
+    CODEX_PATH="$p"
     break
   fi
 done
-if [ -z "$CLAUDE_PATH" ]; then
-  CLAUDE_PATH=$(which claude 2>/dev/null || true)
+if [ -z "$CODEX_PATH" ]; then
+  CODEX_PATH=$(which codex 2>/dev/null || true)
 fi
-if [ -n "$CLAUDE_PATH" ]; then
-  echo "Claude CLI: $CLAUDE_PATH"
+if [ -n "$CODEX_PATH" ]; then
+  echo "Codex CLI: $CODEX_PATH"
 else
-  echo "WARNING: Claude Code CLI not found. Brain features won't work."
-  echo "  Install: https://docs.anthropic.com/en/docs/claude-code"
+  echo "WARNING: Codex CLI not found. Brain features won't work."
+  echo "  Install or open Codex.app first so the bundled CLI is available."
 fi
 
 echo ""
@@ -50,7 +50,7 @@ echo ""
 mkdir -p knowledge
 
 # Make send script executable
-chmod +x send_to_claude.py
+chmod +x send_to_codex.py
 
 echo ""
 echo "=== Setup Complete ==="

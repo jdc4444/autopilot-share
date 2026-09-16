@@ -5,3 +5,5 @@ knowledge/*.json
 !knowledge/.gitkeep
 /tmp/
 .DS_Store
+.claude/
+knowledge/*.json.bak
